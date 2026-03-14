@@ -176,17 +176,22 @@ pub async fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -
         )),
     );
 
+    // Pass the authenticated URL directly to `git fetch` — this is the most
+    // reliable cross-platform approach and avoids the credential helper entirely.
+    // After `git fetch <url>` the fetched HEAD is in FETCH_HEAD.
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
-        let url_cfg = format!("remote.origin.url={aurl}");
         run_git(
             app,
             path,
-            &["-c", &url_cfg, "fetch", "--progress", "origin"],
-            Some("fetch --progress origin  [credentials injected]"),
+            &["-c", "credential.helper=", "fetch", "--progress", &aurl],
+            Some(&format!("fetch --progress <authenticated-url>  (auth: userpass)")),
             Some(&repo.auth),
             Some(proxy),
         )
         .await?;
+        // Use FETCH_HEAD because we fetched a URL, not a named remote
+        run_git(app, path, &["reset", "--hard", "FETCH_HEAD"], None, Some(&repo.auth), Some(proxy))
+            .await?;
     } else {
         run_git(
             app,
@@ -197,19 +202,11 @@ pub async fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -
             Some(proxy),
         )
         .await?;
+        let target = format!("origin/{branch}");
+        run_git(app, path, &["reset", "--hard", &target], None, Some(&repo.auth), Some(proxy))
+            .await?;
+        emit_log(app, SyncEvent::info(format!("  Repo reset to {target}")));
     }
-
-    let target = format!("origin/{branch}");
-    run_git(
-        app,
-        path,
-        &["reset", "--hard", &target],
-        None,
-        Some(&repo.auth),
-        Some(proxy),
-    )
-    .await?;
-    emit_log(app, SyncEvent::info(format!("  Repo reset to {target}")));
     Ok(())
 }
 
@@ -253,13 +250,13 @@ pub async fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -
         )),
     );
 
+    // Pass the authenticated URL directly to `git push` — same rationale as fetch.
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
-        let url_cfg = format!("remote.origin.url={aurl}");
         run_git(
             app,
             path,
-            &["-c", &url_cfg, "push", "--progress", "origin", branch],
-            Some(&format!("push --progress origin {branch}  [credentials injected]")),
+            &["-c", "credential.helper=", "push", "--progress", &aurl, branch],
+            Some(&format!("push --progress <authenticated-url> {branch}  (auth: userpass)")),
             Some(&repo.auth),
             Some(proxy),
         )
