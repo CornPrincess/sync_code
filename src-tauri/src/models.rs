@@ -2,10 +2,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// "none" | "userpass" | "ssh"
+    /// "none" | "userpass" | "token" | "ssh"
     pub auth_type: String,
     pub username: String,
     pub password: String,
+    /// Personal / OAuth2 access token (used when auth_type == "token")
+    #[serde(default)]
+    pub token: String,
     pub ssh_key_path: String,
 }
 
@@ -15,6 +18,7 @@ impl Default for AuthConfig {
             auth_type: "none".into(),
             username: String::new(),
             password: String::new(),
+            token: String::new(),
             ssh_key_path: String::new(),
         }
     }

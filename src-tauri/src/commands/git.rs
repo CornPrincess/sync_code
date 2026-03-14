@@ -14,18 +14,32 @@ pub fn emit_log(app: &AppHandle, event: SyncEvent) {
 // Credential / proxy helpers
 // ---------------------------------------------------------------------------
 
-/// Build an authenticated HTTP(S) URL by embedding user:pass.
-/// Returns None if auth type is not "userpass" or URL is not HTTP(S).
+/// Build an authenticated HTTP(S) URL by embedding credentials.
+///
+/// - `userpass`: `https://username:password@host/repo.git`
+/// - `token`:    `https://oauth2:token@host/repo.git`
+///   Using `oauth2` as the username prefix is widely supported:
+///   GitLab, Gitea, Codeup, GitHub, Bitbucket all accept it.
+///
+/// Returns None when auth is not applicable (SSH, none, or missing fields).
 fn auth_url(remote_url: &str, auth: &AuthConfig) -> Option<String> {
-    if auth.auth_type != "userpass" || auth.username.is_empty() {
-        return None;
-    }
     let scheme_end = remote_url.find("://")? + 3;
     let scheme = &remote_url[..scheme_end];
     let rest = &remote_url[scheme_end..];
-    let u = percent_encode(&auth.username);
-    let p = percent_encode(&auth.password);
-    Some(format!("{scheme}{u}:{p}@{rest}"))
+
+    match auth.auth_type.as_str() {
+        "userpass" if !auth.username.is_empty() => {
+            let u = percent_encode(&auth.username);
+            let p = percent_encode(&auth.password);
+            Some(format!("{scheme}{u}:{p}@{rest}"))
+        }
+        "token" if !auth.token.is_empty() => {
+            let t = percent_encode(&auth.token);
+            // `oauth2` is accepted by GitLab, Gitea, Codeup, GitHub, Bitbucket
+            Some(format!("{scheme}oauth2:{t}@{rest}"))
+        }
+        _ => None,
+    }
 }
 
 /// Minimal percent-encoding for URL credentials (RFC 3986 unreserved chars pass through).
@@ -84,6 +98,7 @@ async fn run_git(
     if let Some(auth) = auth {
         let disabling_prompts = match auth.auth_type.as_str() {
             "userpass" => !auth.username.is_empty(),
+            "token" => !auth.token.is_empty(),
             "ssh" => !auth.ssh_key_path.is_empty(),
             _ => false,
         };

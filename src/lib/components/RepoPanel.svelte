@@ -74,7 +74,11 @@
     <summary class="auth-summary">
       Authentication
       {#if config.auth.auth_type !== 'none'}
-        <span class="auth-badge">{config.auth.auth_type === 'userpass' ? 'User/Password' : 'SSH Key'}</span>
+        <span class="auth-badge">
+          {config.auth.auth_type === 'userpass' ? 'User/Password'
+            : config.auth.auth_type === 'token' ? 'Access Token'
+            : 'SSH Key'}
+        </span>
       {/if}
     </summary>
 
@@ -82,66 +86,72 @@
       <!-- Auth type selector -->
       <div class="radio-group">
         <label class="radio-option">
-          <input
-            type="radio"
-            bind:group={config.auth.auth_type}
-            value="none"
-            onchange={onchange}
-          />
+          <input type="radio" bind:group={config.auth.auth_type} value="none" onchange={onchange} />
           <span>None</span>
         </label>
         <label class="radio-option">
-          <input
-            type="radio"
-            bind:group={config.auth.auth_type}
-            value="userpass"
-            onchange={onchange}
-          />
+          <input type="radio" bind:group={config.auth.auth_type} value="userpass" onchange={onchange} />
           <span>Username / Password</span>
         </label>
         <label class="radio-option">
-          <input
-            type="radio"
-            bind:group={config.auth.auth_type}
-            value="ssh"
-            onchange={onchange}
-          />
+          <input type="radio" bind:group={config.auth.auth_type} value="token" onchange={onchange} />
+          <span>Access Token</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" bind:group={config.auth.auth_type} value="ssh" onchange={onchange} />
           <span>SSH Key</span>
         </label>
       </div>
 
       {#if config.auth.auth_type === 'userpass'}
-        <div class="auth-tip">
-          <strong>GitHub / GitLab / Gitea</strong> no longer accept account passwords for Git
-          operations. Use a <strong>Personal Access Token (PAT)</strong> as the password:
-          <ul>
-            <li>GitHub: Settings → Developer settings → Personal access tokens → Generate new token (scope: <code>repo</code>)</li>
-            <li>GitLab: User Settings → Access Tokens (scope: <code>read_repository</code> + <code>write_repository</code>)</li>
-          </ul>
-        </div>
         <label class="field">
           <span class="field-label">Username</span>
           <input
             type="text"
             bind:value={config.auth.username}
             onchange={onchange}
-            placeholder="your git username (e.g. octocat)"
+            placeholder="your git username"
             class="input"
             autocomplete="off"
           />
         </label>
         <label class="field">
-          <span class="field-label">Personal Access Token</span>
+          <span class="field-label">Password</span>
           <input
             type="password"
             bind:value={config.auth.password}
             onchange={onchange}
-            placeholder="ghp_xxxxxxxxxxxx  (NOT your account password)"
+            placeholder="account password"
             class="input"
             autocomplete="off"
           />
         </label>
-        <p class="auth-note">⚠ Stored in plain text in the app config file. Use a PAT with minimal scopes.</p>
+        <p class="auth-note">⚠ Stored in plain text. For GitHub/GitLab use "Access Token" mode instead.</p>
+      {/if}
+
+      {#if config.auth.auth_type === 'token'}
+        <div class="auth-tip">
+          Supported by <strong>GitHub</strong>, <strong>GitLab</strong>, <strong>Gitea</strong>,
+          <strong>Codeup</strong> and most HTTPS git hosts. Generate a token with repo read/write scope:
+          <ul>
+            <li>GitHub: Settings → Developer settings → Personal access tokens (scope: <code>repo</code>)</li>
+            <li>GitLab: User Settings → Access Tokens (scope: <code>read_repository</code> + <code>write_repository</code>)</li>
+            <li>Codeup: 个人设置 → 安全设置 → 私有令牌</li>
+            <li>Gitea: Settings → Applications → Generate Token</li>
+          </ul>
+        </div>
+        <label class="field">
+          <span class="field-label">Access Token</span>
+          <input
+            type="password"
+            bind:value={config.auth.token}
+            onchange={onchange}
+            placeholder="ghp_xxx / glpat-xxx / your-token"
+            class="input"
+            autocomplete="off"
+          />
+        </label>
+        <p class="auth-note">⚠ Stored in plain text. Token is sent as <code>oauth2:&lt;token&gt;</code> — compatible with most platforms.</p>
       {/if}
 
       {#if config.auth.auth_type === 'ssh'}

@@ -2,10 +2,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export interface AuthConfig {
-  /** "none" | "userpass" | "ssh" */
+  /** "none" | "userpass" | "token" | "ssh" */
   auth_type: string;
   username: string;
   password: string;
+  /** Personal / OAuth2 access token */
+  token: string;
   ssh_key_path: string;
 }
 
@@ -36,7 +38,7 @@ export interface SyncEvent {
 }
 
 export function defaultAuthConfig(): AuthConfig {
-  return { auth_type: 'none', username: '', password: '', ssh_key_path: '' };
+  return { auth_type: 'none', username: '', password: '', token: '', ssh_key_path: '' };
 }
 
 export function defaultRepoConfig(): RepoConfig {
