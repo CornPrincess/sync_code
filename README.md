@@ -97,6 +97,20 @@ This error means an outdated or invalid `plugins.shell.commands` block is presen
 
 Rust is not installed or not on `PATH`. Install via rustup (step 2 above), then run `source ~/.cargo/env` before retrying.
 
+**`could not find Cargo.toml in ... or any parent directory`**
+
+`Cargo.toml` lives inside `src-tauri/`, not the project root. Always run Cargo commands from that subdirectory:
+
+```bash
+cd src-tauri && cargo clean && cd ..
+```
+
+Or use the manifest flag from the project root:
+
+```bash
+cargo clean --manifest-path src-tauri/Cargo.toml
+```
+
 </details>
 
 ---
