@@ -1,79 +1,127 @@
 # CLAUDE.md
 
-This file provides guidance to AI assistants (Claude, etc.) working with this repository.
+This file provides guidance to AI assistants working with this repository.
 
-## Repository Overview
+## Project Overview
 
-**Name:** sync_code
-**Owner:** CornPrincess
-**License:** MIT
-**Status:** Early-stage / initial setup
+**sync_code** — A cross-platform desktop application that syncs code from one git repository (source) into another (target), then pushes the result.
 
-This repository is at its inception — currently containing only a `LICENSE` (MIT, 2026) and a `README.md` placeholder. No source code, tests, or configuration has been added yet.
+**Sync workflow:**
+1. Pull latest from Repo B (source) branch
+2. Mirror Repo B's files into Repo A (target) — copy new/changed, delete removed, skip `.git/`
+3. Commit and push Repo A to its remote
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Desktop framework | Tauri v2 (Rust backend + system WebView) |
+| Frontend | Svelte 5 + TypeScript |
+| Build tool | Vite 8 |
+| Git operations | Shell `git` binary via subprocess (inherits user SSH/credential setup) |
+| Config persistence | JSON file in `app_config_dir` (Tauri managed path) |
+| Rust dependencies | `walkdir`, `serde`/`serde_json`, `chrono`, `thiserror`, Tauri plugins |
 
 ## Repository Structure
 
 ```
 sync_code/
-├── CLAUDE.md       # This file — AI assistant guidance
-├── LICENSE         # MIT License (2026 CornPrincess)
-└── README.md       # Project title placeholder
+├── src/                              # Svelte 5 frontend
+│   ├── lib/
+│   │   ├── components/
+│   │   │   ├── RepoPanel.svelte      # Repo config form (local path, remote URL, branch)
+│   │   │   ├── LogViewer.svelte      # Auto-scrolling log panel (sync://log events)
+│   │   │   └── StatusBadge.svelte    # Sync status indicator
+│   │   ├── stores/
+│   │   │   └── config.svelte.ts      # Svelte 5 $state() reactive config store
+│   │   └── ipc.ts                    # All Tauri invoke() calls — ONLY file touching IPC
+│   ├── App.svelte                    # Root layout
+│   ├── app.css                       # Global CSS custom properties (dark theme)
+│   └── main.ts                       # Svelte mount entry
+├── src-tauri/
+│   ├── src/
+│   │   ├── main.rs                   # Binary entry point (calls lib::run)
+│   │   ├── lib.rs                    # Tauri builder, plugin registration, command registration
+│   │   ├── models.rs                 # Shared data types: RepoConfig, AppConfig, SyncEvent
+│   │   ├── error.rs                  # AppError enum (serializable for Tauri IPC)
+│   │   └── commands/
+│   │       ├── mod.rs
+│   │       ├── config.rs             # load_config / save_config Tauri commands
+│   │       ├── git.rs                # git_pull, git_push, validate_repo, is_dirty
+│   │       └── sync.rs               # start_sync Tauri command (orchestrates full workflow)
+│   ├── Cargo.toml
+│   ├── build.rs
+│   └── tauri.conf.json
+├── .github/workflows/ci.yml          # CI: cargo clippy + svelte-check + vitest
+├── .gitignore
+├── package.json
+├── vite.config.ts
+├── tsconfig.json
+├── svelte.config.js
+├── index.html
+├── CLAUDE.md
+└── README.md
 ```
+
+## Key Architecture Decisions
+
+### IPC Boundary
+All `invoke()` calls live exclusively in `src/lib/ipc.ts`. No component calls `invoke()` directly. This makes the frontend/backend contract explicit and easy to refactor.
+
+### Event-driven logging
+Progress is reported via Tauri events (`sync://log`), not return values. The Rust backend emits `SyncEvent` objects; the frontend `LogViewer` subscribes and renders them.
+
+### Sync lock
+A `Mutex<bool>` in Tauri state (`Arc<Mutex<bool>>`) prevents concurrent sync runs. The frontend also disables the button during sync, but the Rust guard is authoritative.
+
+### File mirroring
+`commands/sync.rs` uses `walkdir` to traverse both repos. Files are copied from B to A, then stale files in A (not present in B) are deleted. The `.git/` directory is unconditionally excluded at every step.
+
+## Development Commands
+
+```bash
+# Install frontend dependencies
+npm install
+
+# Dev mode (hot reload — Vite + Tauri together)
+npm run tauri dev
+
+# Type-check frontend
+npm run check
+
+# Run Rust checks
+cd src-tauri && cargo check
+cd src-tauri && cargo clippy --all-targets
+
+# Run tests
+npm test
+```
+
+## Key Conventions
+
+- **Rust error handling**: Use `AppError` from `error.rs`. All command functions return `Result<T>` (the local type alias). Never panic in commands.
+- **Path handling**: Always use `std::path::PathBuf` — never string-concatenate paths.
+- **Async Rust**: File I/O in `sync.rs` runs in `spawn_blocking` to avoid blocking the async runtime.
+- **Svelte reactivity**: Use Svelte 5 runes (`$state`, `$props`, `$bindable`). No Svelte stores.
+- **CSS**: Design tokens live in `:root` in `app.css`. Components reference `var(--token-name)` — no hard-coded colors.
 
 ## Git Workflow
 
-### Branches
-- `main` — primary default branch (on remote `origin`)
-- `master` — local default branch
-- Feature/task branches follow the pattern `claude/<description>-<id>` (e.g. `claude/add-claude-documentation-QW8E3`)
+- Default branch: `main` (remote)
+- AI task branches: `claude/<description>-<session-id>`
+- Push with: `git push -u origin <branch-name>`
+- Commit style: imperative, e.g. `Add confirmation dialog before sync`
 
-### Commit Conventions
-- Use clear, imperative commit messages (e.g. `Add CLAUDE.md with project documentation`)
-- Keep commits focused — one logical change per commit
-- Reference issue/task IDs in commit messages when applicable
+## Adding New Tauri Commands
 
-### Push Workflow
-```bash
-git push -u origin <branch-name>
-```
-- Branch names for AI-generated work must start with `claude/` and end with the session ID suffix
+1. Add the handler function to the appropriate file in `src-tauri/src/commands/`
+2. Register it in `src-tauri/src/lib.rs` `tauri::generate_handler![...]`
+3. Add a typed wrapper in `src/lib/ipc.ts`
+4. Update types in `src-tauri/src/models.rs` and `src/lib/ipc.ts` together
 
-## Development Guidelines
+## Known Limitations / Future Work
 
-Since the project has not yet defined a tech stack or source structure, the following conventions should be established as code is added:
-
-### General Principles
-- Keep the repository clean — avoid committing generated files, secrets, or build artifacts
-- Add a `.gitignore` appropriate to the chosen tech stack before committing source code
-- Document environment variables in a `.env.example` file (never commit `.env` with real secrets)
-
-### When Adding Source Code
-1. Update `README.md` with: project description, prerequisites, setup steps, and usage
-2. Add a `.gitignore` matching the language/framework
-3. Add dependency management files (`package.json`, `pyproject.toml`, `go.mod`, etc.)
-4. Create a `src/` or similarly conventional source directory
-5. Set up a test directory (`tests/`, `__tests__/`, `spec/`, etc.) from the start
-
-### When Adding CI/CD
-- Use `.github/workflows/` for GitHub Actions
-- Include at minimum: lint, test, and build jobs
-- Run checks on pull requests targeting `main`/`master`
-
-## AI Assistant Instructions
-
-- **Do not invent structure** — only describe or create what is actually present or explicitly requested
-- **Prefer editing existing files** over creating new ones
-- **Keep changes minimal and focused** — avoid over-engineering or adding unrequested features
-- **Always commit on the correct branch** — check the active branch before making commits
-- **Update this file** whenever significant new structure, conventions, or workflows are established
-
-## Future Sections to Add
-
-As the project evolves, expand this file with:
-- Tech stack and language versions
-- Setup and installation instructions
-- How to run tests (`make test`, `npm test`, `pytest`, etc.)
-- How to run linters/formatters and what tools are used
-- Environment variable reference
-- Architecture overview
-- Deployment process
+- No "Test Connection" button per repo (to validate remote URL + auth before syncing)
+- No support for cloning Repo B if it doesn't exist locally (currently errors with a clear message)
+- No selective file exclusion (e.g. `.env` files that shouldn't be synced)
+- Icons are placeholder solid-color PNGs — replace with real icons before distributing
