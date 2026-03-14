@@ -73,8 +73,9 @@ jobs:
             | 平台 | 文件 | 说明 |
             |---|---|---|
             | macOS (Apple Silicon + Intel) | `.dmg` | 通用二进制，双架构 |
-            | Windows | `.msi` | 推荐安装包 |
-            | Windows | `_x64-setup.exe` | NSIS 安装包 |
+            | Windows | `.msi` | 推荐安装包（需安装） |
+            | Windows | `_x64-setup.exe` | NSIS 安装包（需安装） |
+            | Windows | `_portable.zip` | 免安装，解压即用 |
             | Linux | `.deb` | Debian/Ubuntu |
             | Linux | `.AppImage` | 通用 Linux，无需安装 |
 
@@ -82,3 +83,19 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Package Windows portable zip
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          $exe = "src-tauri/target/release/sync-code.exe"
+          $zipName = "sync-code_${version}_windows_portable.zip"
+          Compress-Archive -Path $exe -DestinationPath $zipName
+          echo "PORTABLE_ZIP=$zipName" >> $env:GITHUB_ENV
+
+      - name: Upload Windows portable zip to release
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.PORTABLE_ZIP }}
