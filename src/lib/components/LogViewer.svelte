@@ -7,10 +7,11 @@
   let unlisten: (() => void) | null = null;
 
   onMount(async () => {
-    unlisten = await onSyncLog(async (event) => {
-      lines.push(event);
-      await tick();
-      container?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    unlisten = await onSyncLog((event) => {
+      lines = [...lines, event];
+      tick().then(() => {
+        container?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      });
     });
   });
 

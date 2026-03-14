@@ -56,7 +56,8 @@
     <p class="app-subtitle">Sync code from Repo B into Repo A, then push.</p>
   </header>
 
-  <!-- Repo configuration -->
+  <!-- Repo configuration + proxy (scrollable block so expanding auth never pushes Sync Now off screen) -->
+  <div class="config-area">
   <section class="repo-grid">
     <RepoPanel
       label="Repo A (target)"
@@ -128,6 +129,8 @@
     </details>
   </section>
 
+  </div><!-- /config-area -->
+
   <!-- Actions -->
   <section class="actions">
     {#if errorMessage}
@@ -191,6 +194,16 @@
     color: var(--text-muted);
     padding-top: 44px;
     flex-shrink: 0;
+  }
+
+  /* Config area: scrollable so expanding auth panels never push Sync Now off screen */
+  .config-area {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
   }
 
   /* Proxy section */

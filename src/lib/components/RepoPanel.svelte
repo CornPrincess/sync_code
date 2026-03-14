@@ -84,24 +84,15 @@
 
     <div class="auth-body">
       <!-- Auth type selector -->
-      <div class="radio-group">
-        <label class="radio-option">
-          <input type="radio" bind:group={config.auth.auth_type} value="none" onchange={onchange} />
-          <span>None</span>
-        </label>
-        <label class="radio-option">
-          <input type="radio" bind:group={config.auth.auth_type} value="userpass" onchange={onchange} />
-          <span>Username / Password</span>
-        </label>
-        <label class="radio-option">
-          <input type="radio" bind:group={config.auth.auth_type} value="token" onchange={onchange} />
-          <span>Access Token</span>
-        </label>
-        <label class="radio-option">
-          <input type="radio" bind:group={config.auth.auth_type} value="ssh" onchange={onchange} />
-          <span>SSH Key</span>
-        </label>
-      </div>
+      <label class="field">
+        <span class="field-label">Auth Type</span>
+        <select class="input select" bind:value={config.auth.auth_type} onchange={onchange}>
+          <option value="none">None (system credential helper)</option>
+          <option value="userpass">Username / Password</option>
+          <option value="token">Access Token — GitHub / GitLab / Codeup / Gitea</option>
+          <option value="ssh">SSH Key</option>
+        </select>
+      </label>
 
       {#if config.auth.auth_type === 'userpass'}
         <label class="field">
@@ -130,16 +121,6 @@
       {/if}
 
       {#if config.auth.auth_type === 'token'}
-        <div class="auth-tip">
-          Supported by <strong>GitHub</strong>, <strong>GitLab</strong>, <strong>Gitea</strong>,
-          <strong>Codeup</strong> and most HTTPS git hosts. Generate a token with repo read/write scope:
-          <ul>
-            <li>GitHub: Settings → Developer settings → Personal access tokens (scope: <code>repo</code>)</li>
-            <li>GitLab: User Settings → Access Tokens (scope: <code>read_repository</code> + <code>write_repository</code>)</li>
-            <li>Codeup: 个人设置 → 安全设置 → 私有令牌</li>
-            <li>Gitea: Settings → Applications → Generate Token</li>
-          </ul>
-        </div>
         <label class="field">
           <span class="field-label">Access Token</span>
           <input
@@ -151,7 +132,10 @@
             autocomplete="off"
           />
         </label>
-        <p class="auth-note">⚠ Stored in plain text. Token is sent as <code>oauth2:&lt;token&gt;</code> — compatible with most platforms.</p>
+        <p class="auth-note">
+          Sent as <code>oauth2:&lt;token&gt;</code> — works with GitHub, GitLab, Codeup, Gitea.
+          ⚠ Stored in plain text.
+        </p>
       {/if}
 
       {#if config.auth.auth_type === 'ssh'}
@@ -310,56 +294,10 @@
     gap: 10px;
   }
 
-  .radio-group {
-    display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-    margin-bottom: 4px;
-  }
-
-  .radio-option {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.875rem;
-    color: var(--text-primary);
+  .select {
+    appearance: auto;
     cursor: pointer;
-  }
-
-  .radio-option input[type='radio'] {
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
-
-  .auth-tip {
-    font-size: 0.78rem;
-    color: var(--text-secondary);
-    background: #1c2128;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 8px 10px;
-    line-height: 1.5;
-  }
-
-  .auth-tip strong {
-    color: var(--color-warn);
-  }
-
-  .auth-tip ul {
-    margin: 4px 0 0 0;
-    padding-left: 16px;
-  }
-
-  .auth-tip li {
-    margin: 2px 0;
-  }
-
-  .auth-tip code {
-    font-family: var(--font-mono);
-    background: #0d1117;
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-size: 0.75rem;
+    width: 100%;
   }
 
   .auth-note {
@@ -367,5 +305,14 @@
     font-size: 0.75rem;
     color: var(--text-muted);
     font-style: italic;
+  }
+
+  .auth-note code {
+    font-family: var(--font-mono);
+    background: #0d1117;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.72rem;
+    font-style: normal;
   }
 </style>
