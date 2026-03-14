@@ -17,7 +17,8 @@ Go to the [Releases](../../releases) page and download the installer for your pl
 | Platform | File | Notes |
 |---|---|---|
 | macOS | `.dmg` | Universal binary (Apple Silicon + Intel) |
-| Windows | `.msi` | Recommended |
+| Windows | `.msi` | Recommended installer |
+| Windows | `_portable.zip` | No install needed, unzip and run |
 | Linux | `.AppImage` | No install needed, just run |
 | Linux | `.deb` | Debian / Ubuntu |
 
@@ -27,53 +28,260 @@ Go to the [Releases](../../releases) page and download the installer for your pl
 
 ## Build from source
 
-### Prerequisites
+### macOS
 
-| Tool | Install |
-|---|---|
-| Rust (stable) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| Node.js 20+ | [nodejs.org](https://nodejs.org/) or `brew install node` |
-| git | Pre-installed on most systems |
-| **Linux only** — GTK3 / WebKit | See below |
+<details>
+<summary>Expand macOS instructions</summary>
 
-**Linux system dependencies:**
+#### 1. Install Xcode Command Line Tools
+
 ```bash
-sudo apt-get install libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+xcode-select --install
 ```
 
-**After installing Rust**, reload your shell or run:
+#### 2. Install Rust
+
 ```bash
-source ~/.cargo/env   # macOS / Linux
-# Windows: restart terminal
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
 ```
 
-### Development
+For a universal binary (Apple Silicon + Intel), add both targets:
 
 ```bash
-# 1. Install frontend dependencies
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+```
+
+#### 3. Install Node.js
+
+```bash
+# via Homebrew (recommended)
+brew install node
+
+# or download from https://nodejs.org/
+```
+
+#### 4. Clone and install dependencies
+
+```bash
+git clone https://github.com/CornPrincess/sync_code.git
+cd sync_code
 npm install
-
-# 2. Run in dev mode (hot reload)
-npm run tauri dev
-
-# Type-check only
-npm run check
-
-# Run tests
-npm test
 ```
 
-### Build release installer
+#### 5. Run in development mode
 
 ```bash
-# Builds installer for the current platform
+npm run tauri dev
+```
+
+#### 6. Build release `.dmg`
+
+```bash
+# Single-arch (current machine only)
+npm run tauri build
+
+# Universal binary (runs on both Apple Silicon and Intel)
+npm run tauri build -- --target universal-apple-darwin
+```
+
+Output: `src-tauri/target/release/bundle/macos/`
+
+</details>
+
+---
+
+### Windows
+
+<details>
+<summary>Expand Windows instructions</summary>
+
+#### 1. Install Rust
+
+Download and run the installer from [rustup.rs](https://rustup.rs/).
+Restart your terminal after installation.
+
+Verify:
+```powershell
+rustc --version
+cargo --version
+```
+
+#### 2. Install Visual Studio C++ Build Tools
+
+Rust on Windows requires the MSVC linker. Install one of:
+
+- **Option A** — [Visual Studio 2022](https://visualstudio.microsoft.com/) with the **Desktop development with C++** workload
+- **Option B** — [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (lighter, no IDE)
+
+During install, make sure **MSVC v143** and **Windows SDK** are selected.
+
+#### 3. Install Node.js
+
+Download the LTS installer from [nodejs.org](https://nodejs.org/) and run it.
+
+Verify:
+```powershell
+node --version
+npm --version
+```
+
+#### 4. Install WebView2 (usually pre-installed)
+
+Tauri uses the system WebView2 runtime, which ships with Windows 10 (1803+) and Windows 11.
+If missing, download from [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/).
+
+#### 5. Clone and install dependencies
+
+```powershell
+git clone https://github.com/CornPrincess/sync_code.git
+cd sync_code
+npm install
+```
+
+#### 6. Run in development mode
+
+```powershell
+npm run tauri dev
+```
+
+#### 7. Build release installer
+
+```powershell
 npm run tauri build
 ```
 
-Output is placed in `src-tauri/target/release/bundle/`:
-- macOS: `macos/*.dmg`, `macos/*.app`
-- Windows: `msi/*.msi`, `nsis/*-setup.exe`
-- Linux: `deb/*.deb`, `appimage/*.AppImage`
+Output: `src-tauri\target\release\bundle\`
+- `msi\sync-code_x.x.x_x64_en-US.msi` — MSI installer
+- `nsis\sync-code_x.x.x_x64-setup.exe` — NSIS installer
+- `release\sync-code.exe` — portable executable (zip manually or use CI)
+
+</details>
+
+---
+
+### Linux
+
+<details>
+<summary>Expand Linux instructions</summary>
+
+#### 1. Install system dependencies
+
+**Debian / Ubuntu:**
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libgtk-3-dev \
+  libwebkit2gtk-4.1-dev \
+  libappindicator3-dev \
+  librsvg2-dev \
+  patchelf \
+  build-essential \
+  curl \
+  wget \
+  file \
+  libssl-dev \
+  libayatana-appindicator3-dev
+```
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install -y \
+  gtk3-devel \
+  webkit2gtk4.1-devel \
+  libappindicator-gtk3-devel \
+  librsvg2-devel \
+  patchelf \
+  openssl-devel \
+  curl \
+  wget \
+  file
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S --needed \
+  gtk3 \
+  webkit2gtk-4.1 \
+  libappindicator-gtk3 \
+  librsvg \
+  patchelf \
+  openssl \
+  curl \
+  wget \
+  file \
+  base-devel
+```
+
+#### 2. Install Rust
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
+#### 3. Install Node.js
+
+```bash
+# via nvm (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc   # or ~/.zshrc
+nvm install 20
+nvm use 20
+
+# or via system package manager (Ubuntu)
+sudo apt-get install -y nodejs npm
+```
+
+#### 4. Clone and install dependencies
+
+```bash
+git clone https://github.com/CornPrincess/sync_code.git
+cd sync_code
+npm install
+```
+
+#### 5. Run in development mode
+
+```bash
+npm run tauri dev
+```
+
+> **Headless / SSH sessions**: A display server is required. Use `Xvfb` or connect with X11 forwarding (`ssh -X`).
+
+#### 6. Build release packages
+
+```bash
+npm run tauri build
+```
+
+Output: `src-tauri/target/release/bundle/`
+- `deb/sync-code_x.x.x_amd64.deb` — Debian package
+- `appimage/sync-code_x.x.x_amd64.AppImage` — portable AppImage
+
+**Install the `.deb`:**
+```bash
+sudo dpkg -i src-tauri/target/release/bundle/deb/sync-code_*.deb
+```
+
+**Run the `.AppImage` directly:**
+```bash
+chmod +x sync-code_*.AppImage
+./sync-code_*.AppImage
+```
+
+</details>
+
+---
+
+## Development commands
+
+```bash
+npm run tauri dev   # dev mode with hot reload
+npm run check       # TypeScript + Svelte type check
+npm test            # run unit tests
+cd src-tauri && cargo clippy --all-targets   # Rust lints
+```
 
 ---
 
@@ -102,7 +310,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GitHub Actions will automatically build installers for all three platforms and publish them as a GitHub Release.
+GitHub Actions automatically builds installers for all three platforms and publishes them as a GitHub Release.
 
 ## License
 
