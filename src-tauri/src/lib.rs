@@ -13,7 +13,6 @@ use commands::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(Mutex::new(false))) // sync lock
         .invoke_handler(tauri::generate_handler![load_config, save_config, start_sync])
         .run(tauri::generate_context!())

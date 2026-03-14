@@ -34,17 +34,5 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {
-    "shell": {
-      "open": false,
-      "commands": [
-        {
-          "name": "git",
-          "cmd": "git",
-          "args": true,
-          "sidecar": false
-        }
-      ]
-    }
-  }
+  "plugins": {}
 }
