@@ -78,12 +78,16 @@ fn run_git(
     cmd.args(args)
         .current_dir(dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Never prompt for credentials — fail fast instead.
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .stderr(Stdio::piped());
 
-    // SSH key
+    // When we supply credentials ourselves (userpass URL injection or SSH key),
+    // disable terminal prompts so git fails fast instead of hanging.
+    // For auth_type "none" we leave prompts enabled so the system credential
+    // helper (osxkeychain, git-credential-manager, ssh-agent, …) can work.
     if let Some(auth) = auth {
+        if auth.auth_type == "userpass" || auth.auth_type == "ssh" {
+            cmd.env("GIT_TERMINAL_PROMPT", "0");
+        }
         if let Some(ssh_cmd) = ssh_command(auth) {
             cmd.env("GIT_SSH_COMMAND", ssh_cmd);
         }
