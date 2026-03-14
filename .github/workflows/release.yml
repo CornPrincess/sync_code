@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: '--target universal-apple-darwin'
+          - os: ubuntu-22.04
+            args: ''
+          - os: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Rust (macOS universal)
+        if: matrix.os == 'macos-latest'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Setup Rust (other platforms)
+        if: matrix.os != 'macos-latest'
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'sync_code ${{ github.ref_name }}'
+          releaseBody: |
+            ## 下载说明
+
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | macOS (Apple Silicon + Intel) | `.dmg` | 通用二进制，双架构 |
+            | Windows | `.msi` | 推荐安装包（需安装） |
+            | Windows | `_x64-setup.exe` | NSIS 安装包（需安装） |
+            | Windows | `_portable.zip` | 免安装，解压即用 |
+            | Linux | `.deb` | Debian/Ubuntu |
+            | Linux | `.AppImage` | 通用 Linux，无需安装 |
+
+            > 首次在 macOS 上运行：右键点击 → 打开（绕过 Gatekeeper）
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Package Windows portable zip
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          $exe = "src-tauri/target/release/sync-code.exe"
+          $zipName = "sync-code_${version}_windows_portable.zip"
+          Compress-Archive -Path $exe -DestinationPath $zipName
+          echo "PORTABLE_ZIP=$zipName" >> $env:GITHUB_ENV
+
+      - name: Upload Windows portable zip to release
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.PORTABLE_ZIP }}

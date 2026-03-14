@@ -10,65 +10,99 @@ Given two repositories **A** (target) and **B** (source):
 2. Mirrors Repo B's files into Repo A (overwriting, handling deletions)
 3. Commits and pushes the result to Repo A's remote branch
 
-## Tech Stack
+## Download (pre-built)
 
-- **Desktop**: [Tauri v2](https://tauri.app/) (Rust backend + system WebView)
-- **Frontend**: [Svelte 5](https://svelte.dev/) + TypeScript
-- **Build tool**: Vite 8
-- **Git operations**: Shell `git` commands (inherits your existing SSH/credential setup)
+Go to the [Releases](../../releases) page and download the installer for your platform:
 
-## Prerequisites
+| Platform | File | Notes |
+|---|---|---|
+| macOS | `.dmg` | Universal binary (Apple Silicon + Intel) |
+| Windows | `.msi` | Recommended |
+| Linux | `.AppImage` | No install needed, just run |
+| Linux | `.deb` | Debian / Ubuntu |
 
-- [Rust](https://rustup.rs/) (stable toolchain)
-- [Node.js](https://nodejs.org/) 20+
-- `git` available in your PATH
-- **Linux only**: GTK3 and WebKit2GTK system libraries
-  ```bash
-  sudo apt-get install libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-  ```
+> **macOS first run**: Right-click → Open to bypass Gatekeeper.
 
-## Development
+---
+
+## Build from source
+
+### Prerequisites
+
+| Tool | Install |
+|---|---|
+| Rust (stable) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Node.js 20+ | [nodejs.org](https://nodejs.org/) or `brew install node` |
+| git | Pre-installed on most systems |
+| **Linux only** — GTK3 / WebKit | See below |
+
+**Linux system dependencies:**
+```bash
+sudo apt-get install libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+```
+
+**After installing Rust**, reload your shell or run:
+```bash
+source ~/.cargo/env   # macOS / Linux
+# Windows: restart terminal
+```
+
+### Development
 
 ```bash
-# Install frontend dependencies
+# 1. Install frontend dependencies
 npm install
 
-# Run in development mode (hot reload)
+# 2. Run in dev mode (hot reload)
 npm run tauri dev
 
-# Type-check the frontend
+# Type-check only
 npm run check
 
 # Run tests
 npm test
 ```
 
-## Build
+### Build release installer
 
 ```bash
-# Build release installer for the current platform
+# Builds installer for the current platform
 npm run tauri build
 ```
 
-Installers are placed in `src-tauri/target/release/bundle/`.
+Output is placed in `src-tauri/target/release/bundle/`:
+- macOS: `macos/*.dmg`, `macos/*.app`
+- Windows: `msi/*.msi`, `nsis/*-setup.exe`
+- Linux: `deb/*.deb`, `appimage/*.AppImage`
+
+---
 
 ## Usage
 
-1. Fill in **Repo A** (target): local path, remote URL, and branch
-2. Fill in **Repo B** (source): local path, remote URL, and branch
+1. Fill in **Repo A** (target): local path, remote URL, branch
+2. Fill in **Repo B** (source): local path, remote URL, branch
 3. Click **Sync Now**
 
-Config is saved automatically to your system's application config directory:
+Configuration is saved automatically:
 - **macOS**: `~/Library/Application Support/com.cornprincess.synccode/config.json`
 - **Linux**: `~/.config/com.cornprincess.synccode/config.json`
 - **Windows**: `%APPDATA%\com.cornprincess.synccode\config.json`
 
 ## Notes
 
-- Repo A must have **no uncommitted changes** before syncing — the app will abort with a clear error if it detects a dirty state
-- The `.git/` directory in Repo A is never touched
-- SSH authentication uses your existing SSH agent — launch the app from a terminal that has your agent loaded
-- Git credential helpers (macOS Keychain, Windows Credential Manager, etc.) work automatically
+- Repo A must have **no uncommitted changes** before syncing — the app aborts with a clear error if dirty
+- The `.git/` directory in Repo A is never modified
+- SSH authentication works automatically via your existing SSH agent — launch the app from a terminal that has the agent loaded
+- Git credential helpers (macOS Keychain, Windows Credential Manager) work automatically
+
+## Releasing a new version
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions will automatically build installers for all three platforms and publish them as a GitHub Release.
 
 ## License
 
