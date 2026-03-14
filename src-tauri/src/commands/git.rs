@@ -95,10 +95,18 @@ fn run_git(
         };
         if disabling_prompts {
             cmd.env("GIT_TERMINAL_PROMPT", "0");
+        } else {
+            // The parent process (npm / tauri-cli) may have already set
+            // GIT_TERMINAL_PROMPT=0.  Explicitly remove it so the system
+            // credential helper (osxkeychain, git-credential-manager …)
+            // can work without inheriting that restriction.
+            cmd.env_remove("GIT_TERMINAL_PROMPT");
         }
         if let Some(ssh_cmd) = ssh_command(auth) {
             cmd.env("GIT_SSH_COMMAND", ssh_cmd);
         }
+    } else {
+        cmd.env_remove("GIT_TERMINAL_PROMPT");
     }
 
     // Proxy
