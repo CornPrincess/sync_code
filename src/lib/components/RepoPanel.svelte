@@ -19,11 +19,20 @@
       onchange?.();
     }
   }
+
+  async function browseSSHKey() {
+    const selected = await open({ directory: false, multiple: false });
+    if (typeof selected === 'string') {
+      config.auth.ssh_key_path = selected;
+      onchange?.();
+    }
+  }
 </script>
 
 <div class="repo-panel">
   <h2 class="panel-title">{label}</h2>
 
+  <!-- Basic repo fields -->
   <label class="field">
     <span class="field-label">Local Path</span>
     <div class="path-row">
@@ -59,6 +68,92 @@
       class="input branch-input"
     />
   </label>
+
+  <!-- Authentication section -->
+  <details class="auth-details">
+    <summary class="auth-summary">
+      Authentication
+      {#if config.auth.auth_type !== 'none'}
+        <span class="auth-badge">{config.auth.auth_type === 'userpass' ? 'User/Password' : 'SSH Key'}</span>
+      {/if}
+    </summary>
+
+    <div class="auth-body">
+      <!-- Auth type selector -->
+      <div class="radio-group">
+        <label class="radio-option">
+          <input
+            type="radio"
+            bind:group={config.auth.auth_type}
+            value="none"
+            onchange={onchange}
+          />
+          <span>None</span>
+        </label>
+        <label class="radio-option">
+          <input
+            type="radio"
+            bind:group={config.auth.auth_type}
+            value="userpass"
+            onchange={onchange}
+          />
+          <span>Username / Password</span>
+        </label>
+        <label class="radio-option">
+          <input
+            type="radio"
+            bind:group={config.auth.auth_type}
+            value="ssh"
+            onchange={onchange}
+          />
+          <span>SSH Key</span>
+        </label>
+      </div>
+
+      {#if config.auth.auth_type === 'userpass'}
+        <label class="field">
+          <span class="field-label">Username</span>
+          <input
+            type="text"
+            bind:value={config.auth.username}
+            onchange={onchange}
+            placeholder="git username or token name"
+            class="input"
+            autocomplete="off"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">Password / Token</span>
+          <input
+            type="password"
+            bind:value={config.auth.password}
+            onchange={onchange}
+            placeholder="password or personal access token"
+            class="input"
+            autocomplete="off"
+          />
+        </label>
+        <p class="auth-note">Credentials are stored in plain text in the app config file.</p>
+      {/if}
+
+      {#if config.auth.auth_type === 'ssh'}
+        <label class="field">
+          <span class="field-label">SSH Private Key Path</span>
+          <div class="path-row">
+            <input
+              type="text"
+              bind:value={config.auth.ssh_key_path}
+              onchange={onchange}
+              placeholder="~/.ssh/id_ed25519"
+              class="input"
+            />
+            <button type="button" class="btn-browse" onclick={browseSSHKey}>Browse</button>
+          </div>
+        </label>
+        <p class="auth-note">Uses GIT_SSH_COMMAND with StrictHostKeyChecking=accept-new.</p>
+      {/if}
+    </div>
+  </details>
 </div>
 
 <style>
@@ -139,5 +234,89 @@
 
   .btn-browse:hover {
     background: var(--btn-secondary-hover);
+  }
+
+  /* Authentication section */
+  .auth-details {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-top: 4px;
+  }
+
+  .auth-summary {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    list-style: none;
+  }
+
+  .auth-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .auth-summary::before {
+    content: '▶';
+    font-size: 0.6rem;
+    transition: transform 0.15s;
+    color: var(--text-muted);
+  }
+
+  .auth-details[open] .auth-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .auth-badge {
+    font-size: 0.7rem;
+    background: var(--accent);
+    color: #fff;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .auth-body {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .radio-group {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+
+  .radio-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .radio-option input[type='radio'] {
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .auth-note {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-style: italic;
   }
 </style>

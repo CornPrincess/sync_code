@@ -10,9 +10,11 @@ use crate::error::{AppError, Result};
 use crate::models::{AppConfig, SyncEvent};
 
 /// Mirror the contents of `src` into `dst`, excluding the `.git` directory.
-/// Files present in `dst` (but not in `src`) are deleted to achieve an exact mirror.
+/// Files present in `dst` but not in `src` are deleted for an exact mirror.
 fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
-    // Collect all relative paths in src (excluding .git)
+    emit_log(app, SyncEvent::info(format!("Scanning Repo B: {}", src.display())));
+
+    // Collect all relative file paths from src (excluding .git)
     let mut src_files: HashSet<PathBuf> = HashSet::new();
     for entry in WalkDir::new(src)
         .into_iter()
@@ -23,7 +25,6 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
             .path()
             .strip_prefix(src)
             .expect("walkdir entry is always under src");
-        // Skip anything inside .git
         if rel.components().any(|c| c.as_os_str() == ".git") {
             continue;
         }
@@ -32,20 +33,45 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
 
     emit_log(
         app,
-        SyncEvent::info(format!("Copying {} files from Repo B to Repo A...", src_files.len())),
+        SyncEvent::info(format!(
+            "Found {} file(s) in Repo B — mirroring into Repo A…",
+            src_files.len()
+        )),
     );
 
-    // Copy each file from src to dst
+    // Copy each file from src to dst, logging each one
+    let mut copied = 0u32;
+    let mut skipped = 0u32;
     for rel in &src_files {
         let src_file = src.join(rel);
         let dst_file = dst.join(rel);
         if let Some(parent) = dst_file.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(&src_file, &dst_file)?;
+        // Only copy if content differs (by size+mtime) to avoid unnecessary writes
+        let needs_copy = match (src_file.metadata(), dst_file.metadata()) {
+            (Ok(sm), Ok(dm)) => {
+                sm.len() != dm.len()
+                    || sm.modified().ok() != dm.modified().ok()
+            }
+            _ => true,
+        };
+        if needs_copy {
+            emit_log(app, SyncEvent::info(format!("  copy  {}", rel.display())));
+            fs::copy(&src_file, &dst_file)?;
+            copied += 1;
+        } else {
+            skipped += 1;
+        }
     }
+    emit_log(
+        app,
+        SyncEvent::info(format!(
+            "Copy complete: {copied} updated, {skipped} unchanged."
+        )),
+    );
 
-    // Delete files in dst that don't exist in src (excluding .git)
+    // Delete stale files in dst (present in dst but not in src)
     let mut deleted = 0u32;
     for entry in WalkDir::new(dst)
         .into_iter()
@@ -60,16 +86,20 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
             continue;
         }
         if !src_files.contains(rel) {
+            emit_log(app, SyncEvent::info(format!("  delete {}", rel.display())));
             fs::remove_file(entry.path())?;
             deleted += 1;
         }
     }
-
     if deleted > 0 {
-        emit_log(app, SyncEvent::info(format!("Removed {deleted} stale file(s) from Repo A.")));
+        emit_log(
+            app,
+            SyncEvent::info(format!("Removed {deleted} stale file(s) from Repo A.")),
+        );
     }
 
-    // Remove empty directories (excluding .git), bottom-up
+    // Remove empty directories (bottom-up, excluding .git)
+    let mut pruned_dirs = 0u32;
     for entry in WalkDir::new(dst)
         .contents_first(true)
         .into_iter()
@@ -86,8 +116,15 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
         if rel.components().any(|c| c.as_os_str() == ".git") {
             continue;
         }
-        // Attempt to remove; ignore errors (non-empty dirs will fail silently)
-        let _ = fs::remove_dir(entry.path());
+        if fs::remove_dir(entry.path()).is_ok() {
+            pruned_dirs += 1;
+        }
+    }
+    if pruned_dirs > 0 {
+        emit_log(
+            app,
+            SyncEvent::info(format!("Pruned {pruned_dirs} empty director(ies) from Repo A.")),
+        );
     }
 
     Ok(())
@@ -108,7 +145,6 @@ pub async fn start_sync(
         *locked = true;
     }
 
-    // Run the actual sync, then release the lock regardless of outcome
     let result = do_sync(&app, &config).await;
 
     {
@@ -122,25 +158,40 @@ pub async fn start_sync(
 async fn do_sync(app: &AppHandle, config: &AppConfig) -> Result<()> {
     let path_a = PathBuf::from(&config.repo_a.local_path);
     let path_b = PathBuf::from(&config.repo_b.local_path);
+    let proxy = &config.proxy;
 
-    // Step 1: Validate repos
-    emit_log(app, SyncEvent::info("Validating repositories..."));
-    validate_repo(&path_a)?;
-    validate_repo(&path_b)?;
+    // ── Step 1: Validate repos ──────────────────────────────────────────────
+    emit_log(app, SyncEvent::info("━━ Step 1/5 — Validating repositories ━━"));
+    validate_repo(app, &path_a)?;
+    validate_repo(app, &path_b)?;
 
-    // Step 2: Abort if Repo A is dirty
+    // ── Step 2: Abort if Repo A is dirty ───────────────────────────────────
+    emit_log(app, SyncEvent::info("━━ Step 2/5 — Checking Repo A working tree ━━"));
     if is_dirty(&path_a)? {
         return Err(AppError::Validation(
             "Repo A has uncommitted changes. Please commit or discard them before syncing."
                 .to_string(),
         ));
     }
+    emit_log(app, SyncEvent::info("  Repo A working tree is clean."));
 
-    // Step 3: Pull Repo B
-    emit_log(app, SyncEvent::info("Pulling latest from Repo B..."));
-    git_pull(app, &path_b, &config.repo_b.branch)?;
+    // ── Step 3: Pull Repo B ─────────────────────────────────────────────────
+    emit_log(
+        app,
+        SyncEvent::info(format!(
+            "━━ Step 3/5 — Pulling Repo B ({}@{}) ━━",
+            config.repo_b.local_path, config.repo_b.branch
+        )),
+    );
+    git_pull(app, &config.repo_b, proxy)?;
 
-    // Step 4: Mirror files (blocking file I/O on a thread pool thread)
+    // ── Step 4: Mirror files ────────────────────────────────────────────────
+    emit_log(
+        app,
+        SyncEvent::info(format!(
+            "━━ Step 4/5 — Mirroring Repo B → Repo A ━━"
+        )),
+    );
     let app_clone = app.clone();
     let path_b_clone = path_b.clone();
     let path_a_clone = path_a.clone();
@@ -150,9 +201,15 @@ async fn do_sync(app: &AppHandle, config: &AppConfig) -> Result<()> {
     .await
     .map_err(|e| AppError::Git(e.to_string()))??;
 
-    // Step 5: Push Repo A
-    emit_log(app, SyncEvent::info("Pushing Repo A to remote..."));
-    git_push(app, &path_a, &config.repo_a.branch)?;
+    // ── Step 5: Push Repo A ─────────────────────────────────────────────────
+    emit_log(
+        app,
+        SyncEvent::info(format!(
+            "━━ Step 5/5 — Pushing Repo A ({}@{}) ━━",
+            config.repo_a.local_path, config.repo_a.branch
+        )),
+    );
+    git_push(app, &config.repo_a, proxy)?;
 
     emit_log(app, SyncEvent::success("Sync completed successfully!"));
     Ok(())

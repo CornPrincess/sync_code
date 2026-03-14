@@ -23,7 +23,9 @@
   }
 
   async function copyToClipboard() {
-    const text = lines.map((l) => `[${l.level}] ${l.message}`).join('\n');
+    const text = lines
+      .map((l) => `[${l.timestamp}] [${l.level.padEnd(7)}] ${l.message}`)
+      .join('\n');
     await navigator.clipboard.writeText(text);
   }
 </script>
@@ -44,6 +46,7 @@
     {:else}
       {#each lines as line (line)}
         <div class="log-line log-{line.level}">
+          <span class="log-ts">{line.timestamp}</span>
           <span class="log-prefix">[{line.level}]</span>
           <span class="log-msg">{line.message}</span>
         </div>
@@ -122,14 +125,21 @@
     padding: 1px 0;
   }
 
+  .log-ts {
+    color: var(--text-muted);
+    flex-shrink: 0;
+    user-select: none;
+  }
+
   .log-prefix {
     opacity: 0.5;
     user-select: none;
     flex-shrink: 0;
+    min-width: 52px; /* [success] is widest */
   }
 
-  .log-info .log-msg { color: var(--text-primary); }
-  .log-warn .log-msg { color: var(--color-warn); }
-  .log-error .log-msg { color: var(--color-error); }
+  .log-info .log-msg    { color: var(--text-primary); }
+  .log-warn .log-msg    { color: var(--color-warn); }
+  .log-error .log-msg   { color: var(--color-error); }
   .log-success .log-msg { color: var(--color-success); font-weight: 600; }
 </style>

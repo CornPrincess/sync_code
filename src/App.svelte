@@ -56,6 +56,7 @@
     <p class="app-subtitle">Sync code from Repo B into Repo A, then push.</p>
   </header>
 
+  <!-- Repo configuration -->
   <section class="repo-grid">
     <RepoPanel
       label="Repo A (target)"
@@ -70,6 +71,64 @@
     />
   </section>
 
+  <!-- Network proxy settings -->
+  <section class="proxy-section">
+    <details class="proxy-details">
+      <summary class="proxy-summary">
+        Network Proxy
+        {#if configStore.value.proxy.enabled}
+          <span class="proxy-badge">Enabled</span>
+        {/if}
+      </summary>
+      <div class="proxy-body">
+        <label class="checkbox-option">
+          <input
+            type="checkbox"
+            bind:checked={configStore.value.proxy.enabled}
+            onchange={onConfigChange}
+          />
+          <span>Enable proxy for all git operations</span>
+        </label>
+
+        {#if configStore.value.proxy.enabled}
+          <div class="proxy-fields">
+            <label class="field">
+              <span class="field-label">HTTP Proxy</span>
+              <input
+                type="text"
+                bind:value={configStore.value.proxy.http_proxy}
+                onchange={onConfigChange}
+                placeholder="http://proxy.example.com:8080"
+                class="input"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">HTTPS Proxy</span>
+              <input
+                type="text"
+                bind:value={configStore.value.proxy.https_proxy}
+                onchange={onConfigChange}
+                placeholder="http://proxy.example.com:8080"
+                class="input"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">No Proxy (comma-separated hosts)</span>
+              <input
+                type="text"
+                bind:value={configStore.value.proxy.no_proxy}
+                onchange={onConfigChange}
+                placeholder="localhost,127.0.0.1,.internal.example.com"
+                class="input"
+              />
+            </label>
+          </div>
+        {/if}
+      </div>
+    </details>
+  </section>
+
+  <!-- Actions -->
   <section class="actions">
     {#if errorMessage}
       <div class="error-banner" role="alert">{errorMessage}</div>
@@ -86,6 +145,7 @@
     </div>
   </section>
 
+  <!-- Log output -->
   <section class="log-section">
     <LogViewer />
   </section>
@@ -95,7 +155,7 @@
   .app {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
     padding: 24px;
     height: 100vh;
     box-sizing: border-box;
@@ -133,6 +193,123 @@
     flex-shrink: 0;
   }
 
+  /* Proxy section */
+  .proxy-section {
+    flex-shrink: 0;
+  }
+
+  .proxy-details {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+  }
+
+  .proxy-summary {
+    padding: 8px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    list-style: none;
+  }
+
+  .proxy-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .proxy-summary::before {
+    content: '▶';
+    font-size: 0.6rem;
+    transition: transform 0.15s;
+    color: var(--text-muted);
+  }
+
+  .proxy-details[open] .proxy-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .proxy-badge {
+    font-size: 0.7rem;
+    background: var(--color-warn);
+    color: #000;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .proxy-body {
+    padding: 12px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .proxy-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+  }
+
+  .proxy-fields .field:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .checkbox-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .checkbox-option input[type='checkbox'] {
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .field-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .input {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-family: var(--font-mono);
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+
+  .input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* Actions */
   .actions {
     flex-shrink: 0;
   }
@@ -174,6 +351,7 @@
     cursor: not-allowed;
   }
 
+  /* Log */
   .log-section {
     flex: 1;
     min-height: 0;
