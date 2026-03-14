@@ -80,12 +80,20 @@ fn run_git(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // When we supply credentials ourselves (userpass URL injection or SSH key),
-    // disable terminal prompts so git fails fast instead of hanging.
-    // For auth_type "none" we leave prompts enabled so the system credential
-    // helper (osxkeychain, git-credential-manager, ssh-agent, …) can work.
+    // Disable terminal prompts only when we are actually supplying credentials.
+    // - userpass: credentials injected into the remote URL — prompts never needed,
+    //   BUT only when username is non-empty (otherwise auth_url() returns None
+    //   and we fall back to the system credential helper, which doesn't need a tty).
+    // - ssh: GIT_SSH_COMMAND carries the key; BatchMode=yes already blocks prompts.
+    // - none / userpass-with-empty-username: leave the prompt env unset so that
+    //   the OS credential helper (osxkeychain, git-credential-manager, …) can work.
     if let Some(auth) = auth {
-        if auth.auth_type == "userpass" || auth.auth_type == "ssh" {
+        let disabling_prompts = match auth.auth_type.as_str() {
+            "userpass" => !auth.username.is_empty(),
+            "ssh" => !auth.ssh_key_path.is_empty(),
+            _ => false,
+        };
+        if disabling_prompts {
             cmd.env("GIT_TERMINAL_PROMPT", "0");
         }
         if let Some(ssh_cmd) = ssh_command(auth) {

@@ -25,6 +25,8 @@ pub struct RepoConfig {
     pub local_path: String,
     pub remote_url: String,
     pub branch: String,
+    /// Missing in old config files → deserialize as Default (auth_type "none")
+    #[serde(default)]
     pub auth: AuthConfig,
 }
 
@@ -40,6 +42,8 @@ pub struct ProxyConfig {
 pub struct AppConfig {
     pub repo_a: RepoConfig,
     pub repo_b: RepoConfig,
+    /// Missing in old config files → deserialize as Default (disabled)
+    #[serde(default)]
     pub proxy: ProxyConfig,
 }
 
