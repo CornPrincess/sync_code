@@ -1,0 +1,58 @@
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+
+  /* Dark theme */
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --input-bg: #0d1117;
+  --log-bg: #090d12;
+
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #484f58;
+
+  --accent: #238636;
+  --accent-hover: #2ea043;
+
+  --btn-secondary-bg: #21262d;
+  --btn-secondary-hover: #30363d;
+
+  --color-warn: #e3b341;
+  --color-error: #f85149;
+  --color-success: #3fb950;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
