@@ -111,29 +111,37 @@
       </div>
 
       {#if config.auth.auth_type === 'userpass'}
+        <div class="auth-tip">
+          <strong>GitHub / GitLab / Gitea</strong> no longer accept account passwords for Git
+          operations. Use a <strong>Personal Access Token (PAT)</strong> as the password:
+          <ul>
+            <li>GitHub: Settings → Developer settings → Personal access tokens → Generate new token (scope: <code>repo</code>)</li>
+            <li>GitLab: User Settings → Access Tokens (scope: <code>read_repository</code> + <code>write_repository</code>)</li>
+          </ul>
+        </div>
         <label class="field">
           <span class="field-label">Username</span>
           <input
             type="text"
             bind:value={config.auth.username}
             onchange={onchange}
-            placeholder="git username or token name"
+            placeholder="your git username (e.g. octocat)"
             class="input"
             autocomplete="off"
           />
         </label>
         <label class="field">
-          <span class="field-label">Password / Token</span>
+          <span class="field-label">Personal Access Token</span>
           <input
             type="password"
             bind:value={config.auth.password}
             onchange={onchange}
-            placeholder="password or personal access token"
+            placeholder="ghp_xxxxxxxxxxxx  (NOT your account password)"
             class="input"
             autocomplete="off"
           />
         </label>
-        <p class="auth-note">Credentials are stored in plain text in the app config file.</p>
+        <p class="auth-note">⚠ Stored in plain text in the app config file. Use a PAT with minimal scopes.</p>
       {/if}
 
       {#if config.auth.auth_type === 'ssh'}
@@ -311,6 +319,37 @@
   .radio-option input[type='radio'] {
     accent-color: var(--accent);
     cursor: pointer;
+  }
+
+  .auth-tip {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    background: #1c2128;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 8px 10px;
+    line-height: 1.5;
+  }
+
+  .auth-tip strong {
+    color: var(--color-warn);
+  }
+
+  .auth-tip ul {
+    margin: 4px 0 0 0;
+    padding-left: 16px;
+  }
+
+  .auth-tip li {
+    margin: 2px 0;
+  }
+
+  .auth-tip code {
+    font-family: var(--font-mono);
+    background: #0d1117;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.75rem;
   }
 
   .auth-note {
