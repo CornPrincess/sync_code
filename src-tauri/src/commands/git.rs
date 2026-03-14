@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
+use tokio::process::Command;
 
 use crate::error::{AppError, Result};
 use crate::models::{AuthConfig, ProxyConfig, RepoConfig, SyncEvent};
@@ -54,15 +54,15 @@ fn ssh_command(auth: &AuthConfig) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Core git runner
+// Core git runner (fully async — no blocking of Tokio worker threads)
 // ---------------------------------------------------------------------------
 
-/// Run a git command in `dir`.
+/// Run a git command in `dir` asynchronously.
 ///
 /// * `display` – if `Some`, this string is logged instead of the raw args
 ///   (use it to hide embedded credentials).
 /// * Each non-empty output line is emitted as an info log event.
-fn run_git(
+async fn run_git(
     app: &AppHandle,
     dir: &Path,
     args: &[&str],
@@ -75,18 +75,12 @@ fn run_git(
     emit_log(app, SyncEvent::info(format!("$ git {logged}")));
 
     let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args).current_dir(dir);
 
     // Disable terminal prompts only when we are actually supplying credentials.
-    // - userpass: credentials injected into the remote URL — prompts never needed,
-    //   BUT only when username is non-empty (otherwise auth_url() returns None
-    //   and we fall back to the system credential helper, which doesn't need a tty).
-    // - ssh: GIT_SSH_COMMAND carries the key; BatchMode=yes already blocks prompts.
-    // - none / userpass-with-empty-username: leave the prompt env unset so that
-    //   the OS credential helper (osxkeychain, git-credential-manager, …) can work.
+    // The parent process (npm / tauri-cli) may have already set
+    // GIT_TERMINAL_PROMPT=0, so explicitly remove it when we want the system
+    // credential helper (osxkeychain, git-credential-manager, …) to work.
     if let Some(auth) = auth {
         let disabling_prompts = match auth.auth_type.as_str() {
             "userpass" => !auth.username.is_empty(),
@@ -96,10 +90,6 @@ fn run_git(
         if disabling_prompts {
             cmd.env("GIT_TERMINAL_PROMPT", "0");
         } else {
-            // The parent process (npm / tauri-cli) may have already set
-            // GIT_TERMINAL_PROMPT=0.  Explicitly remove it so the system
-            // credential helper (osxkeychain, git-credential-manager …)
-            // can work without inheriting that restriction.
             cmd.env_remove("GIT_TERMINAL_PROMPT");
         }
         if let Some(ssh_cmd) = ssh_command(auth) {
@@ -127,7 +117,7 @@ fn run_git(
         }
     }
 
-    let output = cmd.output()?;
+    let output = cmd.output().await?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -147,11 +137,11 @@ fn run_git(
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Public API (all async)
 // ---------------------------------------------------------------------------
 
 /// Verify that `path` exists and contains a `.git` directory.
-pub fn validate_repo(app: &AppHandle, path: &Path) -> Result<()> {
+pub async fn validate_repo(app: &AppHandle, path: &Path) -> Result<()> {
     emit_log(app, SyncEvent::info(format!("Checking {}", path.display())));
     if !path.exists() {
         return Err(AppError::Validation(format!(
@@ -174,7 +164,7 @@ pub fn validate_repo(app: &AppHandle, path: &Path) -> Result<()> {
 /// When HTTP userpass auth is configured the remote URL is temporarily
 /// overridden via `-c remote.origin.url=<auth_url>` so credentials are
 /// never written to disk.
-pub fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
+pub async fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
     let path = Path::new(&repo.local_path);
     let branch = &repo.branch;
 
@@ -186,7 +176,6 @@ pub fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
         )),
     );
 
-    // Fetch — inject auth URL via -c so it never persists
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
         let url_cfg = format!("remote.origin.url={aurl}");
         run_git(
@@ -196,7 +185,8 @@ pub fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
             Some("fetch --progress origin  [credentials injected]"),
             Some(&repo.auth),
             Some(proxy),
-        )?;
+        )
+        .await?;
     } else {
         run_git(
             app,
@@ -205,7 +195,8 @@ pub fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
             None,
             Some(&repo.auth),
             Some(proxy),
-        )?;
+        )
+        .await?;
     }
 
     let target = format!("origin/{branch}");
@@ -216,23 +207,25 @@ pub fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
         None,
         Some(&repo.auth),
         Some(proxy),
-    )?;
+    )
+    .await?;
     emit_log(app, SyncEvent::info(format!("  Repo reset to {target}")));
     Ok(())
 }
 
 /// Stage everything, commit (if dirty), and push to `origin/<branch>`.
-pub fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
+pub async fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
     let path = Path::new(&repo.local_path);
     let branch = &repo.branch;
 
-    run_git(app, path, &["add", "-A"], None, Some(&repo.auth), Some(proxy))?;
+    run_git(app, path, &["add", "-A"], None, Some(&repo.auth), Some(proxy)).await?;
 
-    // Check if there is anything to commit
+    // Check if there is anything to commit (async)
     let status_out = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
-        .output()?;
+        .output()
+        .await?;
     let dirty = !status_out.stdout.is_empty();
 
     if dirty {
@@ -246,7 +239,8 @@ pub fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
             None,
             Some(&repo.auth),
             Some(proxy),
-        )?;
+        )
+        .await?;
     } else {
         emit_log(app, SyncEvent::info("Working tree is clean — nothing to commit."));
     }
@@ -268,7 +262,8 @@ pub fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
             Some(&format!("push --progress origin {branch}  [credentials injected]")),
             Some(&repo.auth),
             Some(proxy),
-        )?;
+        )
+        .await?;
     } else {
         run_git(
             app,
@@ -277,16 +272,18 @@ pub fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Resu
             None,
             Some(&repo.auth),
             Some(proxy),
-        )?;
+        )
+        .await?;
     }
     Ok(())
 }
 
 /// Return true if the repo has uncommitted changes.
-pub fn is_dirty(path: &Path) -> Result<bool> {
+pub async fn is_dirty(path: &Path) -> Result<bool> {
     let out = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
-        .output()?;
+        .output()
+        .await?;
     Ok(!out.stdout.is_empty())
 }

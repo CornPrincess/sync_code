@@ -39,7 +39,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
         )),
     );
 
-    // Copy each file from src to dst, logging each one
+    // Copy each file from src to dst
     let mut copied = 0u32;
     let mut skipped = 0u32;
     for rel in &src_files {
@@ -48,11 +48,9 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
         if let Some(parent) = dst_file.parent() {
             fs::create_dir_all(parent)?;
         }
-        // Only copy if content differs (by size+mtime) to avoid unnecessary writes
         let needs_copy = match (src_file.metadata(), dst_file.metadata()) {
             (Ok(sm), Ok(dm)) => {
-                sm.len() != dm.len()
-                    || sm.modified().ok() != dm.modified().ok()
+                sm.len() != dm.len() || sm.modified().ok() != dm.modified().ok()
             }
             _ => true,
         };
@@ -71,7 +69,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
         )),
     );
 
-    // Delete stale files in dst (present in dst but not in src)
+    // Delete stale files in dst not present in src
     let mut deleted = 0u32;
     for entry in WalkDir::new(dst)
         .into_iter()
@@ -98,7 +96,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
         );
     }
 
-    // Remove empty directories (bottom-up, excluding .git)
+    // Prune empty directories (bottom-up, excluding .git)
     let mut pruned_dirs = 0u32;
     for entry in WalkDir::new(dst)
         .contents_first(true)
@@ -111,7 +109,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
             .strip_prefix(dst)
             .expect("walkdir entry is always under dst");
         if rel.as_os_str().is_empty() {
-            continue; // skip root
+            continue;
         }
         if rel.components().any(|c| c.as_os_str() == ".git") {
             continue;
@@ -162,12 +160,12 @@ async fn do_sync(app: &AppHandle, config: &AppConfig) -> Result<()> {
 
     // ── Step 1: Validate repos ──────────────────────────────────────────────
     emit_log(app, SyncEvent::info("━━ Step 1/5 — Validating repositories ━━"));
-    validate_repo(app, &path_a)?;
-    validate_repo(app, &path_b)?;
+    validate_repo(app, &path_a).await?;
+    validate_repo(app, &path_b).await?;
 
     // ── Step 2: Abort if Repo A is dirty ───────────────────────────────────
     emit_log(app, SyncEvent::info("━━ Step 2/5 — Checking Repo A working tree ━━"));
-    if is_dirty(&path_a)? {
+    if is_dirty(&path_a).await? {
         return Err(AppError::Validation(
             "Repo A has uncommitted changes. Please commit or discard them before syncing."
                 .to_string(),
@@ -183,15 +181,10 @@ async fn do_sync(app: &AppHandle, config: &AppConfig) -> Result<()> {
             config.repo_b.local_path, config.repo_b.branch
         )),
     );
-    git_pull(app, &config.repo_b, proxy)?;
+    git_pull(app, &config.repo_b, proxy).await?;
 
-    // ── Step 4: Mirror files ────────────────────────────────────────────────
-    emit_log(
-        app,
-        SyncEvent::info(format!(
-            "━━ Step 4/5 — Mirroring Repo B → Repo A ━━"
-        )),
-    );
+    // ── Step 4: Mirror files (CPU/IO-bound — run on blocking thread) ────────
+    emit_log(app, SyncEvent::info("━━ Step 4/5 — Mirroring Repo B → Repo A ━━"));
     let app_clone = app.clone();
     let path_b_clone = path_b.clone();
     let path_a_clone = path_a.clone();
@@ -209,7 +202,7 @@ async fn do_sync(app: &AppHandle, config: &AppConfig) -> Result<()> {
             config.repo_a.local_path, config.repo_a.branch
         )),
     );
-    git_push(app, &config.repo_a, proxy)?;
+    git_push(app, &config.repo_a, proxy).await?;
 
     emit_log(app, SyncEvent::success("Sync completed successfully!"));
     Ok(())
