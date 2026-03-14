@@ -87,6 +87,16 @@ npm run tauri build -- --target universal-apple-darwin
 
 Output: `src-tauri/target/release/bundle/macos/`
 
+#### Troubleshooting
+
+**`error while running tauri application: PluginInitialization("shell", ...)`**
+
+This error means an outdated or invalid `plugins.shell.commands` block is present in `src-tauri/tauri.conf.json`. That field does not exist in Tauri v2 — the app uses `std::process::Command` directly to run `git`. Remove the `commands` array from `tauri.conf.json` (keep only `"plugins": {}`), and remove `tauri-plugin-shell` from `Cargo.toml` and `lib.rs` if it is present.
+
+**`failed to run 'cargo metadata'` / `No such file or directory`**
+
+Rust is not installed or not on `PATH`. Install via rustup (step 2 above), then run `source ~/.cargo/env` before retrying.
+
 </details>
 
 ---
