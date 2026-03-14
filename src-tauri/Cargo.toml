@@ -6,7 +6,7 @@ rust-version = "1.77"
 
 [lib]
 name = "sync_code_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["lib", "cdylib"]
 
 [[bin]]
 name = "sync-code"
