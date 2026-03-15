@@ -358,7 +358,12 @@ pub async fn refresh_branches(local_path: String, proxy: Option<crate::models::P
         return BranchList { local: vec![], remote: vec![] };
     }
     let mut cmd = Command::new("git");
-    cmd.args(["fetch", "--prune"]).current_dir(path);
+    // Use an explicit wildcard refspec so that repos cloned with --single-branch
+    // (whose .git/config only tracks one branch) still get all remote branches.
+    cmd.args([
+        "fetch", "origin", "--prune",
+        "+refs/heads/*:refs/remotes/origin/*",
+    ]).current_dir(path);
     if let Some(ref p) = proxy {
         if p.enabled {
             if !p.http_proxy.is_empty() {
@@ -380,12 +385,24 @@ pub async fn refresh_branches(local_path: String, proxy: Option<crate::models::P
 }
 
 /// Read local + remote branch names from the cached git refs (no network).
+/// Uses `git for-each-ref` which reliably enumerates all refs regardless of
+/// how the repo was cloned (including --single-branch clones).
 async fn branches_from_refs(path: &std::path::Path) -> BranchList {
-    let local = branch_list(path, &["branch", "--format=%(refname:short)"]).await;
-    let mut remote = branch_list(path, &["branch", "-r", "--format=%(refname:short)"]).await;
-    remote = remote
+    // Local branches
+    let local = branch_list(
+        path,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    ).await;
+
+    // Remote tracking refs under origin/
+    let raw_remote = branch_list(
+        path,
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+    ).await;
+    let mut remote: Vec<String> = raw_remote
         .into_iter()
         .filter_map(|b| {
+            // refname:short for refs/remotes/origin/main => "origin/main"
             let name = b.strip_prefix("origin/").unwrap_or(&b).to_string();
             if name == "HEAD" || name.is_empty() { None } else { Some(name) }
         })
