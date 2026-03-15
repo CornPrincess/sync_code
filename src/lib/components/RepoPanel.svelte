@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { listBranches, checkoutBranch, type RepoConfig } from '../ipc.js';
+  import { listBranches, checkoutBranch, type BranchList, type RepoConfig } from '../ipc.js';
 
   let {
     label,
@@ -13,41 +13,45 @@
   } = $props();
 
   // ── Branch combobox state ──────────────────────────────────────────────────
-  let branches = $state<string[]>([]);
+  let branchList = $state<BranchList>({ local: [], remote: [] });
   let loadingBranches = $state(false);
   let checkingOut = $state(false);
   let branchError = $state('');
   let dropdownOpen = $state(false);
-  let activeIdx = $state(-1);
+  let activeIdx = $state(-1);   // flat index across local + remote
 
-  const filteredBranches = $derived(
-    config.branch
-      ? branches.filter((b) => b.toLowerCase().includes(config.branch.toLowerCase()))
-      : branches
-  );
+  // Filtered sections based on current input text
+  const q = $derived(dropdownOpen ? config.branch.toLowerCase() : '');
+  const filteredLocal  = $derived(q ? branchList.local.filter(b  => b.toLowerCase().includes(q)) : branchList.local);
+  const filteredRemote = $derived(q ? branchList.remote.filter(b => b.toLowerCase().includes(q)) : branchList.remote);
+  const totalCount     = $derived(filteredLocal.length + filteredRemote.length);
+
+  // Flat list for keyboard navigation
+  const flatBranches = $derived([...filteredLocal, ...filteredRemote]);
 
   async function fetchBranches(path: string) {
-    if (!path) { branches = []; return; }
+    if (!path) { branchList = { local: [], remote: [] }; return; }
     loadingBranches = true;
     try {
-      branches = await listBranches(path);
+      branchList = await listBranches(path);
     } catch {
-      branches = [];
+      branchList = { local: [], remote: [] };
     } finally {
       loadingBranches = false;
     }
   }
 
-  // Auto-refresh when local_path changes (initial load)
+  // Auto-refresh when local_path changes
   $effect(() => { fetchBranches(config.local_path); });
 
-  function onBranchFocus() {
+  function openDropdown() {
     dropdownOpen = true;
     activeIdx = -1;
     branchError = '';
-    // Refresh (fetch + list) every time the user focuses the field
     fetchBranches(config.local_path);
   }
+
+  function onBranchFocus() { openDropdown(); }
 
   function onBranchInput() {
     dropdownOpen = true;
@@ -56,24 +60,30 @@
   }
 
   function onBranchKeydown(e: KeyboardEvent) {
-    if (!dropdownOpen || filteredBranches.length === 0) return;
+    if (!dropdownOpen) { if (e.key === 'ArrowDown') openDropdown(); return; }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      activeIdx = Math.min(activeIdx + 1, filteredBranches.length - 1);
+      activeIdx = Math.min(activeIdx + 1, totalCount - 1);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       activeIdx = Math.max(activeIdx - 1, 0);
-    } else if (e.key === 'Enter' && activeIdx >= 0) {
+    } else if (e.key === 'Enter') {
       e.preventDefault();
-      selectBranch(filteredBranches[activeIdx]);
+      if (activeIdx >= 0) selectBranch(flatBranches[activeIdx]);
+      else dropdownOpen = false;
     } else if (e.key === 'Escape') {
       dropdownOpen = false;
     }
   }
 
   function onBranchBlur() {
-    // Delay so a mousedown on a dropdown item fires before the dropdown hides
     setTimeout(() => { dropdownOpen = false; }, 150);
+  }
+
+  function toggleDropdown(e: MouseEvent) {
+    e.preventDefault(); // keep input focused
+    if (dropdownOpen) { dropdownOpen = false; }
+    else openDropdown();
   }
 
   async function selectBranch(branch: string) {
@@ -86,7 +96,7 @@
       await checkoutBranch(config.local_path, branch);
       onchange?.();
     } catch (e) {
-      branchError = String(e).replace(/^Git error:\s*/i, '');
+      branchError = String(e).replace(/^(Git error:|error:)\s*/i, '').trim();
     } finally {
       checkingOut = false;
     }
@@ -95,25 +105,19 @@
   // ── File pickers ───────────────────────────────────────────────────────────
   async function browseFolder() {
     const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === 'string') {
-      config.local_path = selected;
-      onchange?.();
-    }
+    if (typeof selected === 'string') { config.local_path = selected; onchange?.(); }
   }
 
   async function browseSSHKey() {
     const selected = await open({ directory: false, multiple: false });
-    if (typeof selected === 'string') {
-      config.auth.ssh_key_path = selected;
-      onchange?.();
-    }
+    if (typeof selected === 'string') { config.auth.ssh_key_path = selected; onchange?.(); }
   }
 </script>
 
 <div class="repo-panel">
   <h2 class="panel-title">{label}</h2>
 
-  <!-- Basic repo fields -->
+  <!-- Local Path -->
   <label class="field">
     <span class="field-label">Local Path</span>
     <div class="path-row">
@@ -128,6 +132,7 @@
     </div>
   </label>
 
+  <!-- Remote URL -->
   <label class="field">
     <span class="field-label">Remote URL</span>
     <input
@@ -143,16 +148,19 @@
   <div class="field">
     <span class="field-label">
       Branch
-      {#if loadingBranches || checkingOut}
-        <span class="branch-status">
-          {loadingBranches ? 'fetching…' : 'checking out…'}
+      {#if loadingBranches}
+        <span class="branch-hint">fetching…</span>
+      {:else if checkingOut}
+        <span class="branch-hint">checking out…</span>
+      {:else if branchList.local.length + branchList.remote.length > 0}
+        <span class="branch-count">
+          {branchList.local.length}L · {branchList.remote.length}R
         </span>
-      {:else if branches.length > 0}
-        <span class="branch-count">{branches.length}</span>
       {/if}
     </span>
 
     <div class="branch-wrap">
+      <!-- Text input -->
       <input
         type="text"
         bind:value={config.branch}
@@ -166,20 +174,77 @@
         autocomplete="off"
         spellcheck="false"
       />
+      <!-- Arrow toggle button -->
+      <button
+        type="button"
+        class="branch-arrow"
+        class:open={dropdownOpen}
+        onmousedown={toggleDropdown}
+        tabindex="-1"
+        aria-label="Toggle branch list"
+      >
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
+          <path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
 
-      {#if dropdownOpen && filteredBranches.length > 0}
+      <!-- Dropdown -->
+      {#if dropdownOpen}
         <div class="branch-dropdown">
-          {#each filteredBranches as b, i}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="branch-option"
-              class:active={i === activeIdx}
-              onmousedown={() => selectBranch(b)}
-            >
-              {b}
-            </div>
-          {/each}
+          {#if loadingBranches}
+            <div class="branch-loading-row">Fetching branches…</div>
+          {:else if totalCount === 0}
+            <div class="branch-empty">No branches found</div>
+          {:else}
+            <!-- LOCAL section -->
+            {#if filteredLocal.length > 0}
+              <div class="branch-section-header">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M11.75 2.5a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0zm.75 2.25a2.25 2.25 0 1 1-1.5-2.122V6A2.5 2.5 0 0 1 8.5 8.5H5.06a2.25 2.25 0 1 1 0-1.5H8.5A1 1 0 0 0 9.5 6V4.628A2.25 2.25 0 0 1 12.5 4.75zM4.25 13.5a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0zm.75-2.25a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5z"/>
+                </svg>
+                LOCAL BRANCHES
+              </div>
+              {#each filteredLocal as b, i}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="branch-option"
+                  class:active={i === activeIdx}
+                  class:current={b === config.branch}
+                  onmousedown={() => selectBranch(b)}
+                >
+                  <span class="branch-icon">⎇</span>
+                  <span class="branch-name">{b}</span>
+                  {#if b === config.branch}
+                    <span class="branch-current-mark">✓</span>
+                  {/if}
+                </div>
+              {/each}
+            {/if}
+
+            <!-- REMOTE section -->
+            {#if filteredRemote.length > 0}
+              {#if filteredLocal.length > 0}
+                <div class="branch-divider"></div>
+              {/if}
+              <div class="branch-section-header remote-header">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 4.42 3.58 8 8 8s8-3.58 8-8c0-4.42-3.58-8-8-8zm3.67 10.17c-.28.28-.66.44-1.06.44H9.5v1.25a.75.75 0 0 1-1.5 0V10.5H5.39a1.5 1.5 0 0 1-1.06-2.56L7.47 4.8a.75.75 0 0 1 1.06 0l3.14 3.14c.28.29.44.67.44 1.07 0 .4-.16.78-.44 1.06z"/>
+                </svg>
+                REMOTE BRANCHES
+              </div>
+              {#each filteredRemote as b, i}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="branch-option remote"
+                  class:active={filteredLocal.length + i === activeIdx}
+                  onmousedown={() => selectBranch(b)}
+                >
+                  <span class="branch-icon remote-icon">⇅</span>
+                  <span class="branch-name">{b}</span>
+                </div>
+              {/each}
+            {/if}
+          {/if}
         </div>
       {/if}
     </div>
@@ -189,7 +254,7 @@
     {/if}
   </div>
 
-  <!-- Authentication section -->
+  <!-- Authentication -->
   <details class="auth-details">
     <summary class="auth-summary">
       Authentication
@@ -203,7 +268,6 @@
     </summary>
 
     <div class="auth-body">
-      <!-- Auth type selector -->
       <label class="field">
         <span class="field-label">Auth Type</span>
         <select class="input select" bind:value={config.auth.auth_type} onchange={onchange}>
@@ -217,25 +281,13 @@
       {#if config.auth.auth_type === 'userpass'}
         <label class="field">
           <span class="field-label">Username</span>
-          <input
-            type="text"
-            bind:value={config.auth.username}
-            onchange={onchange}
-            placeholder="your git username"
-            class="input"
-            autocomplete="off"
-          />
+          <input type="text" bind:value={config.auth.username} onchange={onchange}
+            placeholder="your git username" class="input" autocomplete="off" />
         </label>
         <label class="field">
           <span class="field-label">Password</span>
-          <input
-            type="password"
-            bind:value={config.auth.password}
-            onchange={onchange}
-            placeholder="account password"
-            class="input"
-            autocomplete="off"
-          />
+          <input type="password" bind:value={config.auth.password} onchange={onchange}
+            placeholder="account password" class="input" autocomplete="off" />
         </label>
         <p class="auth-note">⚠ Stored in plain text. For GitHub/GitLab use "Access Token" mode instead.</p>
       {/if}
@@ -243,14 +295,8 @@
       {#if config.auth.auth_type === 'token'}
         <label class="field">
           <span class="field-label">Access Token</span>
-          <input
-            type="password"
-            bind:value={config.auth.token}
-            onchange={onchange}
-            placeholder="ghp_xxx / glpat-xxx / your-token"
-            class="input"
-            autocomplete="off"
-          />
+          <input type="password" bind:value={config.auth.token} onchange={onchange}
+            placeholder="ghp_xxx / glpat-xxx / your-token" class="input" autocomplete="off" />
         </label>
         <p class="auth-note">
           Sent as <code>oauth2:&lt;token&gt;</code> — works with GitHub, GitLab, Codeup, Gitea.
@@ -262,13 +308,8 @@
         <label class="field">
           <span class="field-label">SSH Private Key Path</span>
           <div class="path-row">
-            <input
-              type="text"
-              bind:value={config.auth.ssh_key_path}
-              onchange={onchange}
-              placeholder="~/.ssh/id_ed25519"
-              class="input"
-            />
+            <input type="text" bind:value={config.auth.ssh_key_path} onchange={onchange}
+              placeholder="~/.ssh/id_ed25519" class="input" />
             <button type="button" class="btn-browse" onclick={browseSSHKey}>Browse</button>
           </div>
         </label>
@@ -319,9 +360,7 @@
     gap: 8px;
   }
 
-  .path-row .input {
-    flex: 1;
-  }
+  .path-row .input { flex: 1; }
 
   .input {
     width: 100%;
@@ -341,12 +380,10 @@
     border-color: var(--accent);
   }
 
-  .input-error {
-    border-color: var(--color-error) !important;
-  }
+  .input-error { border-color: var(--color-error) !important; }
 
-  /* ── Branch combobox ───────────────────────────────────────────────────── */
-  .branch-status {
+  /* ── Branch status labels ────────────────────────────────────────────────── */
+  .branch-hint {
     font-size: 0.72rem;
     color: var(--text-muted);
     font-weight: 400;
@@ -362,36 +399,105 @@
     background: var(--btn-secondary-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 0 5px;
+    padding: 0 6px;
     letter-spacing: 0;
     text-transform: none;
   }
 
+  /* ── Branch combobox container ───────────────────────────────────────────── */
   .branch-wrap {
     position: relative;
-    max-width: 240px;
+    max-width: 280px;
+    display: flex;
+    align-items: stretch;
   }
 
   .branch-input {
-    width: 100%;
+    flex: 1;
+    border-radius: 5px 0 0 5px;
+    border-right: none;
+    min-width: 0;
   }
 
+  /* Arrow button — attached to the right of the input */
+  .branch-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    flex-shrink: 0;
+    background: var(--btn-secondary-bg);
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 5px 5px 0;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .branch-arrow:hover { background: var(--btn-secondary-hover); color: var(--text-primary); }
+
+  .branch-arrow svg {
+    transition: transform 0.15s;
+  }
+  .branch-arrow.open svg { transform: rotate(180deg); }
+
+  /* Shared focus glow: when input is focused, also highlight the arrow border */
+  .branch-wrap:focus-within .branch-arrow {
+    border-color: var(--accent);
+  }
+  .branch-wrap:focus-within .branch-input {
+    border-color: var(--accent);
+  }
+
+  /* ── Dropdown panel ──────────────────────────────────────────────────────── */
   .branch-dropdown {
     position: absolute;
-    top: calc(100% + 3px);
+    top: calc(100% + 4px);
     left: 0;
     right: 0;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 5px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    max-height: 180px;
+    border-radius: 6px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    max-height: 220px;
     overflow-y: auto;
-    z-index: 100;
+    z-index: 200;
   }
 
+  /* Section headers (LOCAL / REMOTE) */
+  .branch-section-header {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    user-select: none;
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+  }
+
+  .remote-header { color: #79c0ff; }
+  .remote-header svg { fill: #79c0ff; }
+
+  .branch-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 2px 0;
+  }
+
+  /* Branch rows */
   .branch-option {
-    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px 5px 14px;
     font-size: 0.82rem;
     font-family: var(--font-mono);
     color: var(--text-primary);
@@ -399,13 +505,51 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    transition: background 0.08s;
+    transition: background 0.07s;
   }
 
   .branch-option:hover,
   .branch-option.active {
     background: rgba(35, 134, 54, 0.15);
+  }
+
+  .branch-option.current {
     color: var(--accent-hover);
+    font-weight: 600;
+  }
+
+  .branch-option.remote .branch-name { color: #79c0ff; }
+  .branch-option.remote:hover .branch-name,
+  .branch-option.remote.active .branch-name { color: #a5d6ff; }
+
+  .branch-icon {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+  }
+
+  .remote-icon { color: #4d9cf8; }
+
+  .branch-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .branch-current-mark {
+    font-size: 0.75rem;
+    color: var(--accent-hover);
+    flex-shrink: 0;
+  }
+
+  .branch-loading-row,
+  .branch-empty {
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   .branch-error {
@@ -414,7 +558,7 @@
     line-height: 1.4;
   }
 
-  /* ── Buttons ───────────────────────────────────────────────────────────── */
+  /* ── Buttons ─────────────────────────────────────────────────────────────── */
   .btn-browse {
     padding: 8px 14px;
     background: var(--btn-secondary-bg);
@@ -427,11 +571,9 @@
     transition: background 0.15s;
   }
 
-  .btn-browse:hover {
-    background: var(--btn-secondary-hover);
-  }
+  .btn-browse:hover { background: var(--btn-secondary-hover); }
 
-  /* ── Authentication section ────────────────────────────────────────────── */
+  /* ── Authentication section ──────────────────────────────────────────────── */
   .auth-details {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -453,9 +595,7 @@
     list-style: none;
   }
 
-  .auth-summary::-webkit-details-marker {
-    display: none;
-  }
+  .auth-summary::-webkit-details-marker { display: none; }
 
   .auth-summary::before {
     content: '▶';
@@ -464,9 +604,7 @@
     color: var(--text-muted);
   }
 
-  .auth-details[open] .auth-summary::before {
-    transform: rotate(90deg);
-  }
+  .auth-details[open] .auth-summary::before { transform: rotate(90deg); }
 
   .auth-badge {
     font-size: 0.7rem;

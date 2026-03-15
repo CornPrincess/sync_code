@@ -331,51 +331,63 @@ pub async fn revert_remaining(path: &Path) -> Result<()> {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-/// Return all local and remote branch names for a given repo path.
+/// Structured branch list returned to the frontend.
+#[derive(serde::Serialize)]
+pub struct BranchList {
+    pub local: Vec<String>,
+    pub remote: Vec<String>,
+}
+
+/// Return local and remote branch names (separated) for a given repo path.
 /// Runs `git fetch --prune` first to pick up the latest remote branches.
-/// Returns an empty list (no error) if the path doesn't exist or isn't a git repo.
+/// Returns empty lists (no error) if the path doesn't exist or isn't a git repo.
 #[tauri::command]
-pub async fn list_branches(local_path: String) -> Vec<String> {
+pub async fn list_branches(local_path: String) -> BranchList {
     let path = std::path::Path::new(&local_path);
     if local_path.is_empty() || !path.exists() {
-        return vec![];
+        return BranchList { local: vec![], remote: vec![] };
     }
-    // Silently fetch to refresh remote-tracking refs; ignore errors (no remote, offline, etc.)
+    // Silently fetch to refresh remote-tracking refs
     let _ = Command::new("git")
         .args(["fetch", "--prune"])
         .current_dir(path)
         .output()
         .await;
 
-    let Ok(out) = Command::new("git")
-        .args(["branch", "-a", "--format=%(refname:short)"])
-        .current_dir(path)
-        .output()
-        .await
-    else {
+    // Local branches
+    let local = branch_list(path, &["branch", "--format=%(refname:short)"]).await;
+
+    // Remote tracking branches — strip "origin/" prefix, drop HEAD
+    let mut remote = branch_list(path, &["branch", "-r", "--format=%(refname:short)"]).await;
+    remote = remote
+        .into_iter()
+        .filter_map(|b| {
+            let name = b.strip_prefix("origin/").unwrap_or(&b).to_string();
+            if name == "HEAD" || name.is_empty() { None } else { Some(name) }
+        })
+        .collect();
+    remote.sort();
+    remote.dedup();
+
+    // Exclude from remote any branch that already exists locally
+    let local_set: std::collections::HashSet<_> = local.iter().cloned().collect();
+    remote.retain(|b| !local_set.contains(b));
+
+    BranchList { local, remote }
+}
+
+async fn branch_list(path: &std::path::Path, args: &[&str]) -> Vec<String> {
+    let Ok(out) = Command::new("git").args(args).current_dir(path).output().await else {
         return vec![];
     };
-    if !out.status.success() {
-        return vec![];
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut branches: Vec<String> = stdout
+    if !out.status.success() { return vec![]; }
+    let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(|l| l.trim().to_string())
-        // Strip "origin/" prefix from remote tracking refs so they read like local branches
-        .map(|b| {
-            if let Some(stripped) = b.strip_prefix("origin/") {
-                stripped.to_string()
-            } else {
-                b
-            }
-        })
-        // Skip the HEAD ref
-        .filter(|b| b != "HEAD" && !b.is_empty())
+        .filter(|l| !l.is_empty())
         .collect();
-    branches.sort();
-    branches.dedup();
-    branches
+    v.sort();
+    v
 }
 
 /// Checkout the given branch in the repo at `local_path`.

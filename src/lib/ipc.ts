@@ -107,13 +107,18 @@ export async function discardSync(config: AppConfig): Promise<void> {
   return invoke<void>('discard_sync', { config });
 }
 
+export interface BranchList {
+  local: string[];
+  remote: string[];
+}
+
 /**
- * List all local + remote branch names for the given repo path.
+ * List local and remote branch names (separately) for the given repo path.
  * Runs `git fetch --prune` first to pick up the latest remote refs.
- * Returns [] if the path is empty, doesn't exist, or isn't a git repo.
+ * Returns empty lists if the path is empty, doesn't exist, or isn't a git repo.
  */
-export async function listBranches(localPath: string): Promise<string[]> {
-  return invoke<string[]>('list_branches', { localPath });
+export async function listBranches(localPath: string): Promise<BranchList> {
+  return invoke<BranchList>('list_branches', { localPath });
 }
 
 /** Run `git checkout <branch>` in the given repo. Throws on failure. */
