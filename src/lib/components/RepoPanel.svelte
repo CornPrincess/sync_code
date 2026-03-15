@@ -138,7 +138,7 @@
     if (!config.local_path) { onchange?.(); return; }
     checkingOut = true;
     try {
-      await checkoutAndPull(config.local_path, branch, config.remote_url, config.auth, proxy);
+      await checkoutAndPull(config.local_path, branch, config.remote_url, config.auth, proxy, config.platform ?? 'github');
       onchange?.();
     } catch (e) {
       branchError = String(e).replace(/^(Git error:|error:)\s*/i, '').trim();
@@ -177,6 +177,41 @@
     </div>
   </label>
 
+  <!-- Platform -->
+  <label class="field">
+    <span class="field-label">Platform</span>
+    <div class="platform-row">
+      {#each [
+        { value: 'github',  label: 'GitHub',        logo: 'github'  },
+        { value: 'gitlab',  label: 'GitLab',        logo: 'gitlab'  },
+        { value: 'codeup',  label: 'Codeup (阿里云)', logo: 'codeup'  },
+      ] as p}
+        <button
+          type="button"
+          class="platform-btn"
+          class:selected={config.platform === p.value}
+          onclick={() => { config.platform = p.value; onchange?.(); }}
+        >
+          {#if p.logo === 'github'}
+            <svg class="platform-icon" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+            </svg>
+          {:else if p.logo === 'gitlab'}
+            <svg class="platform-icon" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M15.97 9.058l-.895-2.756L13.3.842a.37.37 0 00-.702 0L10.821 6.3H5.18L3.403.842a.37.37 0 00-.702 0L.925 6.302.03 9.058a.693.693 0 00.252.775L8 15.233l7.718-5.4a.693.693 0 00.252-.775"/>
+            </svg>
+          {:else}
+            <svg class="platform-icon" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a7 7 0 100 14A7 7 0 008 1zM0 8a8 8 0 1116 0A8 8 0 010 8z"/>
+              <path d="M5.5 6.5A1.5 1.5 0 017 5h2a1.5 1.5 0 011.5 1.5v.5H7.5V6.5a.5.5 0 00-.5-.5H7a.5.5 0 00-.5.5V7H5.5v-.5zM5 8h6v1.5A1.5 1.5 0 019.5 11h-3A1.5 1.5 0 015 9.5V8z"/>
+            </svg>
+          {/if}
+          <span>{p.label}</span>
+        </button>
+      {/each}
+    </div>
+  </label>
+
   <!-- Remote URL -->
   <label class="field">
     <span class="field-label">Remote URL</span>
@@ -184,7 +219,11 @@
       type="text"
       bind:value={config.remote_url}
       onchange={onchange}
-      placeholder="git@github.com:user/repo.git"
+      placeholder={config.platform === 'gitlab'
+        ? 'https://gitlab.com/user/repo.git'
+        : config.platform === 'codeup'
+        ? 'https://codeup.aliyun.com/org/repo.git'
+        : 'https://github.com/user/repo.git'}
       class="input"
     />
   </label>
@@ -337,7 +376,7 @@
         <select class="input select" bind:value={config.auth.auth_type} onchange={onchange}>
           <option value="none">None (system credential helper)</option>
           <option value="userpass">Username / Password</option>
-          <option value="token">Access Token — GitHub / GitLab / Codeup / Gitea</option>
+          <option value="token">Access Token</option>
           <option value="ssh">SSH Key</option>
         </select>
       </label>
@@ -353,19 +392,48 @@
           <input type="password" bind:value={config.auth.password} onchange={onchange}
             placeholder="account password" class="input" autocomplete="off" />
         </label>
-        <p class="auth-note">⚠ Stored in plain text. For GitHub/GitLab use "Access Token" mode instead.</p>
+        <p class="auth-note">⚠ Stored in plain text. Use "Access Token" mode for better security.</p>
       {/if}
 
       {#if config.auth.auth_type === 'token'}
-        <label class="field">
-          <span class="field-label">Access Token</span>
-          <input type="password" bind:value={config.auth.token} onchange={onchange}
-            placeholder="ghp_xxx / glpat-xxx / your-token" class="input" autocomplete="off" />
-        </label>
-        <p class="auth-note">
-          Sent as <code>oauth2:&lt;token&gt;</code> — works with GitHub, GitLab, Codeup, Gitea.
-          ⚠ Stored in plain text.
-        </p>
+        {#if config.platform === 'codeup'}
+          <!-- Codeup requires username + token (basic auth format: username:token) -->
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input type="text" bind:value={config.auth.username} onchange={onchange}
+              placeholder="your Codeup username" class="input" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Personal Access Token</span>
+            <input type="password" bind:value={config.auth.token} onchange={onchange}
+              placeholder="your Codeup personal access token" class="input" autocomplete="off" />
+          </label>
+          <p class="auth-note">
+            Yunxiao → 个人中心 → 个人访问令牌。
+            格式：<code>&lt;username&gt;:&lt;token&gt;</code>。⚠ 明文存储。
+          </p>
+        {:else if config.platform === 'gitlab'}
+          <label class="field">
+            <span class="field-label">Personal Access Token</span>
+            <input type="password" bind:value={config.auth.token} onchange={onchange}
+              placeholder="glpat-xxxxxxxxxxxxxxxxxxxx" class="input" autocomplete="off" />
+          </label>
+          <p class="auth-note">
+            GitLab → User Settings → Access Tokens（需要 <code>read_repository</code> + <code>write_repository</code> 权限）。
+            格式：<code>oauth2:&lt;token&gt;</code>。⚠ 明文存储。
+          </p>
+        {:else}
+          <!-- GitHub -->
+          <label class="field">
+            <span class="field-label">Personal Access Token</span>
+            <input type="password" bind:value={config.auth.token} onchange={onchange}
+              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" class="input" autocomplete="off" />
+          </label>
+          <p class="auth-note">
+            GitHub → Settings → Developer settings → Personal access tokens（需要 <code>repo</code> 权限）。
+            格式：<code>oauth2:&lt;token&gt;</code>。⚠ 明文存储。
+          </p>
+        {/if}
       {/if}
 
       {#if config.auth.auth_type === 'ssh'}
@@ -466,6 +534,46 @@
     padding: 0 6px;
     letter-spacing: 0;
     text-transform: none;
+  }
+
+  /* ── Platform selector ───────────────────────────────────────────────────── */
+  .platform-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .platform-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+    flex: 1;
+    justify-content: center;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+  }
+
+  .platform-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+
+  .platform-btn.selected {
+    border-color: var(--accent);
+    background: rgba(35, 134, 54, 0.12);
+    color: var(--accent-hover);
+    font-weight: 600;
+  }
+
+  .platform-icon {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
   }
 
   /* ── Branch combobox container ───────────────────────────────────────────── */

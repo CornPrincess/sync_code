@@ -17,7 +17,12 @@ pub fn emit_log(log: &LogFn, event: SyncEvent) {
 // Credential / proxy helpers
 // ---------------------------------------------------------------------------
 
-fn auth_url(remote_url: &str, auth: &AuthConfig) -> Option<String> {
+/// Build an authenticated remote URL for HTTPS-based git operations.
+/// Each platform has a different token URL format:
+///   GitHub  — oauth2:<token>@github.com/...   (or x-access-token, both work)
+///   GitLab  — oauth2:<token>@gitlab.com/...   (documented by GitLab)
+///   Codeup  — <username>:<token>@codeup.aliyun.com/...  (basic HTTP auth)
+fn auth_url(remote_url: &str, auth: &AuthConfig, platform: &str) -> Option<String> {
     let scheme_end = remote_url.find("://")? + 3;
     let scheme = &remote_url[..scheme_end];
     let rest = &remote_url[scheme_end..];
@@ -29,7 +34,17 @@ fn auth_url(remote_url: &str, auth: &AuthConfig) -> Option<String> {
         }
         "token" if !auth.token.is_empty() => {
             let t = percent_encode(&auth.token);
-            Some(format!("{scheme}oauth2:{t}@{rest}"))
+            match platform {
+                "codeup" => {
+                    // Codeup requires real username + token as password
+                    let u = if auth.username.is_empty() { "git".to_string() } else { percent_encode(&auth.username) };
+                    Some(format!("{scheme}{u}:{t}@{rest}"))
+                }
+                _ => {
+                    // GitHub and GitLab both accept "oauth2" as the username
+                    Some(format!("{scheme}oauth2:{t}@{rest}"))
+                }
+            }
         }
         _ => None,
     }
@@ -168,7 +183,7 @@ pub async fn git_pull(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) -> Re
         )),
     );
 
-    if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
+    if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth, &repo.platform) {
         // Specify the branch refspec explicitly so git fetches the right branch
         // (not just the remote's default HEAD) and maps it to origin/<branch>.
         let refspec = format!("refs/heads/{branch}:refs/remotes/origin/{branch}");
@@ -255,7 +270,7 @@ pub async fn git_push_only(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) 
         )),
     );
 
-    if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
+    if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth, &repo.platform) {
         run_git(
             log,
             path,
@@ -494,6 +509,7 @@ pub async fn checkout_and_pull(
     remote_url: String,
     auth: crate::models::AuthConfig,
     proxy: crate::models::ProxyConfig,
+    platform: String,
 ) -> Result<()> {
     let path = Path::new(&local_path);
     if local_path.is_empty() || !path.exists() {
@@ -525,7 +541,7 @@ pub async fn checkout_and_pull(
     //    and branch so it works on single-branch clones too.
     //    For userpass/token auth embed credentials in the URL.
     let mut pull_cmd = Command::new("git");
-    if let Some(aurl) = auth_url(&remote_url, &auth) {
+    if let Some(aurl) = auth_url(&remote_url, &auth, &platform) {
         pull_cmd.args(["-c", "credential.helper=", "pull", &aurl, &branch]);
     } else {
         pull_cmd.args(["pull", "origin", &branch]);

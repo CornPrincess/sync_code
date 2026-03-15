@@ -15,6 +15,8 @@ export interface RepoConfig {
   remote_url: string;
   branch: string;
   auth: AuthConfig;
+  /** "github" | "gitlab" | "codeup" */
+  platform: string;
 }
 
 export interface ProxyConfig {
@@ -48,7 +50,7 @@ export function defaultAuthConfig(): AuthConfig {
 }
 
 export function defaultRepoConfig(): RepoConfig {
-  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig() };
+  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github' };
 }
 
 export function defaultProxyConfig(): ProxyConfig {
@@ -143,6 +145,7 @@ export async function checkoutAndPull(
   remoteUrl: string,
   auth: AuthConfig,
   proxy: ProxyConfig,
+  platform: string,
 ): Promise<void> {
-  return invoke<void>('checkout_and_pull', { localPath, branch, remoteUrl, auth, proxy });
+  return invoke<void>('checkout_and_pull', { localPath, branch, remoteUrl, auth, proxy, platform });
 }

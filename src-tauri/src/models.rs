@@ -41,6 +41,13 @@ pub struct RepoConfig {
     /// Missing in old config files → deserialize as Default (auth_type "none")
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Hosting platform: "github" | "gitlab" | "codeup" (default "github")
+    #[serde(default = "default_platform")]
+    pub platform: String,
+}
+
+fn default_platform() -> String {
+    "github".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
