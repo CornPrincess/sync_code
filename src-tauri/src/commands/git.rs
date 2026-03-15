@@ -169,17 +169,22 @@ pub async fn git_pull(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) -> Re
     );
 
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
+        // Specify the branch refspec explicitly so git fetches the right branch
+        // (not just the remote's default HEAD) and maps it to origin/<branch>.
+        let refspec = format!("refs/heads/{branch}:refs/remotes/origin/{branch}");
         run_git(
             log,
             path,
-            &["-c", "credential.helper=", "fetch", "--progress", &aurl],
-            Some(&format!("fetch --progress <auth-url> (auth: {})", repo.auth.auth_type)),
+            &["-c", "credential.helper=", "fetch", "--progress", &aurl, &refspec],
+            Some(&format!("fetch --progress <auth-url> {} (auth: {})", branch, repo.auth.auth_type)),
             Some(&repo.auth),
             Some(proxy),
         )
         .await?;
-        run_git(log, path, &["reset", "--hard", "FETCH_HEAD"], None, Some(&repo.auth), Some(proxy))
+        let target = format!("origin/{branch}");
+        run_git(log, path, &["reset", "--hard", &target], None, Some(&repo.auth), Some(proxy))
             .await?;
+        emit_log(log, SyncEvent::info(format!("  Reset to {target}")));
     } else {
         run_git(
             log,
