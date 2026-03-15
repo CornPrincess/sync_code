@@ -146,7 +146,7 @@
 <div class="file-tree">
   <!-- Header: select-all checkbox + summary -->
   <div class="tree-header">
-    <label class="header-check">
+    <label class="cb-wrap">
       <input
         type="checkbox"
         checked={allSelected}
@@ -276,7 +276,7 @@
 
   .tree-row:hover { background: rgba(255,255,255,0.04); }
 
-  /* Checkbox wrapper */
+  /* Checkbox — hide native, draw custom */
   .cb-wrap {
     display: flex;
     align-items: center;
@@ -285,10 +285,69 @@
   }
 
   .cb {
-    accent-color: var(--accent);
+    /* hide the native checkbox but keep it in the a11y tree */
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
     cursor: pointer;
-    width: 13px;
-    height: 13px;
+
+    /* box */
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+    vertical-align: middle;
+  }
+
+  /* hover */
+  .cb:hover {
+    border-color: var(--accent-hover);
+  }
+
+  /* checked — filled green */
+  .cb:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* checkmark via pseudo-element */
+  .cb:checked::after {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 1px;
+    width: 5px;
+    height: 8px;
+    border: 2px solid #fff;
+    border-top: none;
+    border-left: none;
+    transform: rotate(45deg);
+  }
+
+  /* indeterminate — dash */
+  .cb:indeterminate {
+    background: var(--surface);
+    border-color: var(--accent);
+  }
+
+  .cb:indeterminate::after {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 5px;
+    width: 6px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+  }
+
+  /* focus ring */
+  .cb:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(35, 134, 54, 0.4);
   }
 
   /* Directory rows */
