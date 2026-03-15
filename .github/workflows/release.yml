@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0)'
+        required: true
 
 permissions:
   contents: write
@@ -15,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-13
             args: '--target universal-apple-darwin'
           - os: ubuntu-22.04
             args: ''
@@ -39,13 +44,13 @@ jobs:
             patchelf
 
       - name: Setup Rust (macOS universal)
-        if: matrix.os == 'macos-latest'
+        if: matrix.os == 'macos-13'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Setup Rust (other platforms)
-        if: matrix.os != 'macos-latest'
+        if: matrix.os != 'macos-13'
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -65,8 +70,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'sync_code ${{ github.ref_name }}'
+          tagName: ${{ github.ref_name || inputs.tag }}
+          releaseName: 'sync_code ${{ github.ref_name || inputs.tag }}'
           releaseBody: |
             ## 下载说明
 
@@ -88,7 +93,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
+          $version = "${{ github.ref_name || inputs.tag }}"
           $exe = "src-tauri/target/release/sync-code.exe"
           $zipName = "sync-code_${version}_windows_portable.zip"
           Compress-Archive -Path $exe -DestinationPath $zipName
@@ -97,5 +102,8 @@ jobs:
       - name: Upload Windows portable zip to release
         if: matrix.os == 'windows-latest'
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
           files: ${{ env.PORTABLE_ZIP }}
