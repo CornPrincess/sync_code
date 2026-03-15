@@ -4,18 +4,32 @@
   import LogViewer from './lib/components/LogViewer.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import { configStore } from './lib/stores/config.svelte.js';
-  import { startSync, type SyncEvent } from './lib/ipc.js';
+  import {
+    startSync,
+    commitAndPush,
+    discardSync,
+    type SyncEvent,
+    type FileChange,
+  } from './lib/ipc.js';
 
-  type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
+  type SyncStatus = 'idle' | 'syncing' | 'review' | 'pushing' | 'success' | 'error';
 
   let status = $state<SyncStatus>('idle');
   let lastSync = $state<string | undefined>(undefined);
   let errorMessage = $state<string | undefined>(undefined);
   let lines = $state<SyncEvent[]>([]);
 
+  // Review state
+  let pendingFiles = $state<FileChange[]>([]);
+  let commitMessage = $state('');
+
   onMount(() => {
     configStore.load();
   });
+
+  function defaultCommitMessage(): string {
+    return `sync: ${new Date().toLocaleString('sv').replace('T', ' ')}`;
+  }
 
   function validate(): string | null {
     const a = configStore.value.repo_a;
@@ -30,27 +44,56 @@
   async function handleSync() {
     errorMessage = undefined;
     const err = validate();
-    if (err) {
-      errorMessage = err;
-      return;
-    }
+    if (err) { errorMessage = err; return; }
 
     lines = [];
     status = 'syncing';
     try {
-      await startSync(configStore.value, (event) => {
+      const files = await startSync(configStore.value, (event) => {
         lines = [...lines, event];
       });
-      status = 'success';
-      lastSync = new Date().toLocaleTimeString();
+      pendingFiles = files;
+      commitMessage = defaultCommitMessage();
+      status = 'review';
     } catch (e: unknown) {
       status = 'error';
       errorMessage = typeof e === 'string' ? e : 'An unexpected error occurred.';
     }
   }
 
+  async function handlePush() {
+    errorMessage = undefined;
+    status = 'pushing';
+    try {
+      await commitAndPush(configStore.value, commitMessage, (event) => {
+        lines = [...lines, event];
+      });
+      status = 'success';
+      lastSync = new Date().toLocaleTimeString();
+      pendingFiles = [];
+    } catch (e: unknown) {
+      status = 'error';
+      errorMessage = typeof e === 'string' ? e : 'Push failed.';
+    }
+  }
+
+  async function handleDiscard() {
+    try {
+      await discardSync(configStore.value);
+    } catch {
+      /* best effort */
+    }
+    pendingFiles = [];
+    status = 'idle';
+  }
+
   function onConfigChange() {
     configStore.save().catch(console.error);
+  }
+
+  // Derived helpers for the review panel
+  function statusIcon(s: string): string {
+    return s === 'added' ? '+' : s === 'deleted' ? '−' : s === 'renamed' ? '→' : s === 'copied' ? '⊕' : '~';
   }
 </script>
 
@@ -76,7 +119,6 @@
       />
     </section>
 
-    <!-- Network proxy settings -->
     <section class="proxy-section">
       <details class="proxy-details">
         <summary class="proxy-summary">
@@ -94,38 +136,19 @@
             />
             <span>Enable proxy for all git operations</span>
           </label>
-
           {#if configStore.value.proxy.enabled}
             <div class="proxy-fields">
               <label class="field">
                 <span class="field-label">HTTP Proxy</span>
-                <input
-                  type="text"
-                  bind:value={configStore.value.proxy.http_proxy}
-                  onchange={onConfigChange}
-                  placeholder="http://proxy.example.com:8080"
-                  class="input"
-                />
+                <input type="text" bind:value={configStore.value.proxy.http_proxy} onchange={onConfigChange} placeholder="http://proxy.example.com:8080" class="input" />
               </label>
               <label class="field">
                 <span class="field-label">HTTPS Proxy</span>
-                <input
-                  type="text"
-                  bind:value={configStore.value.proxy.https_proxy}
-                  onchange={onConfigChange}
-                  placeholder="http://proxy.example.com:8080"
-                  class="input"
-                />
+                <input type="text" bind:value={configStore.value.proxy.https_proxy} onchange={onConfigChange} placeholder="http://proxy.example.com:8080" class="input" />
               </label>
               <label class="field">
-                <span class="field-label">No Proxy (comma-separated hosts)</span>
-                <input
-                  type="text"
-                  bind:value={configStore.value.proxy.no_proxy}
-                  onchange={onConfigChange}
-                  placeholder="localhost,127.0.0.1,.internal.example.com"
-                  class="input"
-                />
+                <span class="field-label">No Proxy (comma-separated)</span>
+                <input type="text" bind:value={configStore.value.proxy.no_proxy} onchange={onConfigChange} placeholder="localhost,127.0.0.1" class="input" />
               </label>
             </div>
           {/if}
@@ -134,7 +157,7 @@
     </section>
   </div>
 
-  <!-- Actions -->
+  <!-- Action bar -->
   <section class="actions">
     {#if errorMessage}
       <div class="error-banner" role="alert">{errorMessage}</div>
@@ -144,14 +167,88 @@
       <button
         class="btn-sync"
         onclick={handleSync}
-        disabled={status === 'syncing'}
+        disabled={status === 'syncing' || status === 'review' || status === 'pushing'}
       >
         {status === 'syncing' ? 'Syncing…' : 'Sync Now'}
       </button>
     </div>
   </section>
 
-  <!-- Log output -->
+  <!-- ─── Review panel (appears after sync completes) ──────────────────── -->
+  {#if status === 'review' || status === 'pushing'}
+    <section class="review-panel">
+      <div class="review-header">
+        <span class="review-title">
+          {#if pendingFiles.length === 0}
+            ✔ Nothing to push — Repo A is already up to date
+          {:else}
+            Review Changes
+          {/if}
+        </span>
+        {#if pendingFiles.length > 0}
+          <span class="review-count">{pendingFiles.length} file{pendingFiles.length !== 1 ? 's' : ''}</span>
+        {/if}
+      </div>
+
+      {#if pendingFiles.length > 0}
+        <div class="review-body">
+          <!-- Left: file list -->
+          <div class="file-list-wrap">
+            <ul class="file-list">
+              {#each pendingFiles as f (f.path)}
+                <li class="file-item file-{f.status}">
+                  <span class="file-icon" aria-label={f.status}>{statusIcon(f.status)}</span>
+                  <span class="file-path">{f.path}</span>
+                  {#if f.old_path}
+                    <span class="file-old">← {f.old_path}</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          </div>
+
+          <!-- Right: commit message + buttons -->
+          <div class="commit-pane">
+            <label class="field">
+              <span class="field-label">Commit Message</span>
+              <textarea
+                class="commit-msg"
+                bind:value={commitMessage}
+                rows="4"
+                placeholder="Describe what changed…"
+                disabled={status === 'pushing'}
+              ></textarea>
+            </label>
+            <p class="commit-hint">Leave blank to use the default message.</p>
+
+            <div class="commit-actions">
+              <button
+                class="btn-discard"
+                onclick={handleDiscard}
+                disabled={status === 'pushing'}
+              >
+                Discard
+              </button>
+              <button
+                class="btn-push"
+                onclick={handlePush}
+                disabled={status === 'pushing'}
+              >
+                {status === 'pushing' ? 'Pushing…' : 'Commit & Push →'}
+              </button>
+            </div>
+          </div>
+        </div>
+      {:else}
+        <!-- Nothing to push -->
+        <div class="review-empty-actions">
+          <button class="btn-discard" onclick={handleDiscard}>Done</button>
+        </div>
+      {/if}
+    </section>
+  {/if}
+
+  <!-- Output log -->
   <section class="log-section">
     <LogViewer bind:lines />
   </section>
@@ -167,9 +264,7 @@
     box-sizing: border-box;
   }
 
-  .app-header {
-    flex-shrink: 0;
-  }
+  .app-header { flex-shrink: 0; }
 
   .app-title {
     margin: 0;
@@ -179,12 +274,12 @@
   }
 
   .app-subtitle {
-    margin: 4px 0 0 0;
+    margin: 4px 0 0;
     font-size: 0.8rem;
     color: var(--text-muted);
   }
 
-  /* Config area: natural height, no overflow clipping */
+  /* Config area */
   .config-area {
     display: flex;
     flex-direction: column;
@@ -226,9 +321,7 @@
     list-style: none;
   }
 
-  .proxy-summary::-webkit-details-marker {
-    display: none;
-  }
+  .proxy-summary::-webkit-details-marker { display: none; }
 
   .proxy-summary::before {
     content: '▶';
@@ -237,9 +330,7 @@
     color: var(--text-muted);
   }
 
-  .proxy-details[open] .proxy-summary::before {
-    transform: rotate(90deg);
-  }
+  .proxy-details[open] .proxy-summary::before { transform: rotate(90deg); }
 
   .proxy-badge {
     font-size: 0.7rem;
@@ -266,9 +357,7 @@
     gap: 10px 16px;
   }
 
-  .proxy-fields .field:last-child {
-    grid-column: 1 / -1;
-  }
+  .proxy-fields .field:last-child { grid-column: 1 / -1; }
 
   .checkbox-option {
     display: flex;
@@ -279,16 +368,9 @@
     cursor: pointer;
   }
 
-  .checkbox-option input[type='checkbox'] {
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
+  .checkbox-option input[type='checkbox'] { accent-color: var(--accent); cursor: pointer; }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
+  .field { display: flex; flex-direction: column; gap: 6px; }
 
   .field-label {
     font-size: 0.8rem;
@@ -311,15 +393,10 @@
     transition: border-color 0.15s;
   }
 
-  .input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  .input:focus { outline: none; border-color: var(--accent); }
 
-  /* Actions */
-  .actions {
-    flex-shrink: 0;
-  }
+  /* Action bar */
+  .actions { flex-shrink: 0; }
 
   .actions-row {
     display: flex;
@@ -349,16 +426,183 @@
     transition: background 0.15s, opacity 0.15s;
   }
 
-  .btn-sync:hover:not(:disabled) {
-    background: var(--accent-hover);
+  .btn-sync:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-sync:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ─── Review panel ──────────────────────────────────────────────────── */
+  .review-panel {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    overflow: hidden;
   }
 
-  .btn-sync:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .review-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #1c2333;
+    border-bottom: 1px solid var(--border);
   }
 
-  /* Log: fixed height with internal scroll */
+  .review-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+  }
+
+  .review-count {
+    font-size: 0.75rem;
+    background: var(--accent);
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+
+  .review-body {
+    display: flex;
+    gap: 0;
+    min-height: 220px;
+    max-height: 340px;
+  }
+
+  /* File list — left column */
+  .file-list-wrap {
+    flex: 1 1 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+  }
+
+  .file-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px 0;
+  }
+
+  .file-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 14px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.6;
+    transition: background 0.1s;
+  }
+
+  .file-item:hover { background: rgba(255,255,255,0.04); }
+
+  .file-icon {
+    font-size: 0.85rem;
+    font-weight: 700;
+    width: 14px;
+    text-align: center;
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .file-path { color: var(--text-primary); word-break: break-all; }
+
+  .file-old {
+    color: var(--text-muted);
+    font-size: 0.73rem;
+    flex-shrink: 0;
+  }
+
+  /* Status colours */
+  .file-added   .file-icon { color: var(--color-success); }
+  .file-added   .file-path { color: var(--color-success); }
+  .file-deleted .file-icon { color: var(--color-error); }
+  .file-deleted .file-path { color: var(--color-error); opacity: 0.85; text-decoration: line-through; }
+  .file-modified .file-icon { color: #79c0ff; }
+  .file-modified .file-path { color: #79c0ff; }
+  .file-renamed .file-icon { color: var(--color-warn); }
+  .file-renamed .file-path { color: var(--color-warn); }
+  .file-copied  .file-icon { color: #a371f7; }
+  .file-copied  .file-path { color: #a371f7; }
+  .file-unknown .file-icon { color: var(--text-muted); }
+  .file-unknown .file-path { color: var(--text-muted); }
+
+  /* Commit pane — right column */
+  .commit-pane {
+    flex: 0 0 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .commit-msg {
+    width: 100%;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    padding: 8px 10px;
+    resize: vertical;
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+
+  .commit-msg:focus { outline: none; border-color: var(--accent); }
+  .commit-msg:disabled { opacity: 0.5; }
+
+  .commit-hint {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .commit-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: auto;
+  }
+
+  .btn-discard {
+    padding: 8px 16px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .btn-discard:hover:not(:disabled) { border-color: var(--color-error); color: var(--color-error); }
+  .btn-discard:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn-push {
+    padding: 8px 18px;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+
+  .btn-push:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-push:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .review-empty-actions {
+    padding: 14px 16px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* Log */
   .log-section {
     height: 380px;
     display: flex;

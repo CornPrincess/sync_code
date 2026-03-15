@@ -6,25 +6,27 @@ use tauri::AppHandle;
 use tauri::ipc::Channel;
 use walkdir::WalkDir;
 
-use crate::commands::git::{emit_log, git_pull, git_push, is_dirty, validate_repo, LogFn};
+use crate::commands::git::{
+    discard_changes, emit_log, get_staged_files, git_add_all, git_commit, git_pull,
+    git_push_only, is_dirty, validate_repo, LogFn,
+};
 use crate::error::{AppError, Result};
-use crate::models::{AppConfig, SyncEvent};
+use crate::models::{AppConfig, FileChange, SyncEvent};
 
-/// Mirror the contents of `src` into `dst`, excluding the `.git` directory.
+// ---------------------------------------------------------------------------
+// File mirroring (unchanged from before)
+// ---------------------------------------------------------------------------
+
 fn mirror_files(log: &LogFn, src: &Path, dst: &Path) -> Result<()> {
     emit_log(log, SyncEvent::info(format!("Scanning Repo B: {}", src.display())));
 
-    // Collect all relative file paths from src (excluding .git)
     let mut src_files: HashSet<PathBuf> = HashSet::new();
     for entry in WalkDir::new(src)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
-        let rel = entry
-            .path()
-            .strip_prefix(src)
-            .expect("walkdir entry is always under src");
+        let rel = entry.path().strip_prefix(src).expect("walkdir under src");
         if rel.components().any(|c| c.as_os_str() == ".git") {
             continue;
         }
@@ -33,13 +35,9 @@ fn mirror_files(log: &LogFn, src: &Path, dst: &Path) -> Result<()> {
 
     emit_log(
         log,
-        SyncEvent::info(format!(
-            "Found {} file(s) in Repo B — mirroring into Repo A…",
-            src_files.len()
-        )),
+        SyncEvent::info(format!("Found {} file(s) in Repo B — mirroring…", src_files.len())),
     );
 
-    // Copy each file from src to dst
     let mut copied = 0u32;
     let mut skipped = 0u32;
     for rel in &src_files {
@@ -49,9 +47,7 @@ fn mirror_files(log: &LogFn, src: &Path, dst: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
         let needs_copy = match (src_file.metadata(), dst_file.metadata()) {
-            (Ok(sm), Ok(dm)) => {
-                sm.len() != dm.len() || sm.modified().ok() != dm.modified().ok()
-            }
+            (Ok(sm), Ok(dm)) => sm.len() != dm.len() || sm.modified().ok() != dm.modified().ok(),
             _ => true,
         };
         if needs_copy {
@@ -64,22 +60,16 @@ fn mirror_files(log: &LogFn, src: &Path, dst: &Path) -> Result<()> {
     }
     emit_log(
         log,
-        SyncEvent::info(format!(
-            "Copy complete: {copied} updated, {skipped} unchanged."
-        )),
+        SyncEvent::info(format!("Copy complete: {copied} updated, {skipped} unchanged.")),
     );
 
-    // Delete stale files in dst not present in src
     let mut deleted = 0u32;
     for entry in WalkDir::new(dst)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
-        let rel = entry
-            .path()
-            .strip_prefix(dst)
-            .expect("walkdir entry is always under dst");
+        let rel = entry.path().strip_prefix(dst).expect("walkdir under dst");
         if rel.components().any(|c| c.as_os_str() == ".git") {
             continue;
         }
@@ -90,43 +80,31 @@ fn mirror_files(log: &LogFn, src: &Path, dst: &Path) -> Result<()> {
         }
     }
     if deleted > 0 {
-        emit_log(
-            log,
-            SyncEvent::info(format!("Removed {deleted} stale file(s) from Repo A.")),
-        );
+        emit_log(log, SyncEvent::info(format!("Removed {deleted} stale file(s).")));
     }
 
-    // Prune empty directories (bottom-up, excluding .git)
-    let mut pruned_dirs = 0u32;
+    let mut pruned = 0u32;
     for entry in WalkDir::new(dst)
         .contents_first(true)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_dir())
     {
-        let rel = entry
-            .path()
-            .strip_prefix(dst)
-            .expect("walkdir entry is always under dst");
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        if rel.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        if fs::remove_dir(entry.path()).is_ok() {
-            pruned_dirs += 1;
-        }
+        let rel = entry.path().strip_prefix(dst).expect("walkdir under dst");
+        if rel.as_os_str().is_empty() { continue; }
+        if rel.components().any(|c| c.as_os_str() == ".git") { continue; }
+        if fs::remove_dir(entry.path()).is_ok() { pruned += 1; }
     }
-    if pruned_dirs > 0 {
-        emit_log(
-            log,
-            SyncEvent::info(format!("Pruned {pruned_dirs} empty director(ies) from Repo A.")),
-        );
+    if pruned > 0 {
+        emit_log(log, SyncEvent::info(format!("Pruned {pruned} empty dir(s).")));
     }
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// start_sync — steps 1-6; returns the list of staged changes for review
+// ---------------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn start_sync(
@@ -134,8 +112,7 @@ pub async fn start_sync(
     config: AppConfig,
     sync_lock: tauri::State<'_, Arc<Mutex<bool>>>,
     on_event: Channel<SyncEvent>,
-) -> Result<()> {
-    // Acquire sync lock — prevent concurrent runs
+) -> Result<Vec<FileChange>> {
     {
         let mut locked = sync_lock.lock().map_err(|_| AppError::SyncInProgress)?;
         if *locked {
@@ -144,7 +121,6 @@ pub async fn start_sync(
         *locked = true;
     }
 
-    // Build a LogFn backed by the Channel — guaranteed delivery through IPC
     let log: LogFn = Arc::new(move |event: SyncEvent| {
         let _ = on_event.send(event);
     });
@@ -159,38 +135,52 @@ pub async fn start_sync(
     result
 }
 
-async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<()> {
+async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>> {
     let path_a = PathBuf::from(&config.repo_a.local_path);
     let path_b = PathBuf::from(&config.repo_b.local_path);
     let proxy = &config.proxy;
 
-    // ── Step 1: Validate repos ──────────────────────────────────────────────
-    emit_log(log, SyncEvent::info("━━ Step 1/5 — Validating repositories ━━"));
+    // ── Step 1: Validate ────────────────────────────────────────────────────
+    emit_log(log, SyncEvent::info("━━ Step 1/6 — Validating repositories ━━"));
     validate_repo(log, &path_a).await?;
     validate_repo(log, &path_b).await?;
 
-    // ── Step 2: Abort if Repo A is dirty ───────────────────────────────────
-    emit_log(log, SyncEvent::info("━━ Step 2/5 — Checking Repo A working tree ━━"));
+    // ── Step 2: Check Repo A is clean ───────────────────────────────────────
+    emit_log(log, SyncEvent::info("━━ Step 2/6 — Checking Repo A working tree ━━"));
     if is_dirty(&path_a).await? {
         return Err(AppError::Validation(
             "Repo A has uncommitted changes. Please commit or discard them before syncing."
-                .to_string(),
+                .into(),
         ));
     }
     emit_log(log, SyncEvent::info("  Repo A working tree is clean."));
 
-    // ── Step 3: Pull Repo B ─────────────────────────────────────────────────
+    // ── Step 3: Pull Repo A ─────────────────────────────────────────────────
     emit_log(
         log,
         SyncEvent::info(format!(
-            "━━ Step 3/5 — Pulling Repo B ({}@{}) ━━",
+            "━━ Step 3/6 — Pulling Repo A ({}@{}) ━━",
+            config.repo_a.local_path, config.repo_a.branch
+        )),
+    );
+    if config.repo_a.remote_url.trim().is_empty() {
+        emit_log(log, SyncEvent::info("  No remote URL configured for Repo A — skipping pull."));
+    } else {
+        git_pull(log, &config.repo_a, proxy).await?;
+    }
+
+    // ── Step 4: Pull Repo B ─────────────────────────────────────────────────
+    emit_log(
+        log,
+        SyncEvent::info(format!(
+            "━━ Step 4/6 — Pulling Repo B ({}@{}) ━━",
             config.repo_b.local_path, config.repo_b.branch
         )),
     );
     git_pull(log, &config.repo_b, proxy).await?;
 
-    // ── Step 4: Mirror files (CPU/IO-bound — run on blocking thread) ────────
-    emit_log(log, SyncEvent::info("━━ Step 4/5 — Mirroring Repo B → Repo A ━━"));
+    // ── Step 5: Mirror B → A ────────────────────────────────────────────────
+    emit_log(log, SyncEvent::info("━━ Step 5/6 — Mirroring Repo B → Repo A ━━"));
     let log_clone = Arc::clone(log);
     let path_b_clone = path_b.clone();
     let path_a_clone = path_a.clone();
@@ -200,16 +190,55 @@ async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<()> {
     .await
     .map_err(|e| AppError::Git(e.to_string()))??;
 
-    // ── Step 5: Push Repo A ─────────────────────────────────────────────────
-    emit_log(
-        log,
-        SyncEvent::info(format!(
-            "━━ Step 5/5 — Pushing Repo A ({}@{}) ━━",
-            config.repo_a.local_path, config.repo_a.branch
-        )),
-    );
-    git_push(log, &config.repo_a, proxy).await?;
+    // ── Step 6: Stage all changes, collect file list ─────────────────────────
+    emit_log(log, SyncEvent::info("━━ Step 6/6 — Staging changes in Repo A ━━"));
+    git_add_all(log, &path_a, Some(&config.repo_a.auth), Some(proxy)).await?;
+    let files = get_staged_files(&path_a).await?;
 
-    emit_log(log, SyncEvent::success("Sync completed successfully!"));
+    if files.is_empty() {
+        emit_log(log, SyncEvent::info("  Nothing changed — Repo A is already up to date."));
+    } else {
+        emit_log(
+            log,
+            SyncEvent::info(format!("  {} file(s) staged and ready to review.", files.len())),
+        );
+    }
+
+    Ok(files)
+}
+
+// ---------------------------------------------------------------------------
+// commit_and_push — user-triggered after reviewing changes
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn commit_and_push(
+    config: AppConfig,
+    commit_message: String,
+    on_event: Channel<SyncEvent>,
+) -> Result<()> {
+    let log: LogFn = Arc::new(move |event: SyncEvent| {
+        let _ = on_event.send(event);
+    });
+    let path_a = PathBuf::from(&config.repo_a.local_path);
+    let proxy = &config.proxy;
+
+    emit_log(&log, SyncEvent::info("━━ Committing ━━"));
+    git_commit(&log, &path_a, &commit_message, Some(&config.repo_a.auth), Some(proxy)).await?;
+
+    emit_log(&log, SyncEvent::info("━━ Pushing Repo A ━━"));
+    git_push_only(&log, &config.repo_a, proxy).await?;
+
+    emit_log(&log, SyncEvent::success("Push completed successfully!"));
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// discard_sync — revert Repo A to HEAD (undo the mirror)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn discard_sync(config: AppConfig) -> Result<()> {
+    let path_a = PathBuf::from(&config.repo_a.local_path);
+    discard_changes(&path_a).await
 }

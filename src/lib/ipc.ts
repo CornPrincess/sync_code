@@ -36,6 +36,13 @@ export interface SyncEvent {
   timestamp: string; // "HH:MM:SS"
 }
 
+export interface FileChange {
+  /** "added" | "modified" | "deleted" | "renamed" | "copied" | "unknown" */
+  status: string;
+  path: string;
+  old_path: string | null;
+}
+
 export function defaultAuthConfig(): AuthConfig {
   return { auth_type: 'none', username: '', password: '', token: '', ssh_key_path: '' };
 }
@@ -69,11 +76,28 @@ export async function saveConfig(config: AppConfig): Promise<void> {
  * The Channel shares the same IPC pipe as invoke responses, so events
  * are guaranteed to arrive while the command runs (no race with emit/listen).
  */
+/** Run sync steps 1-6, returning staged file changes for review. */
 export async function startSync(
   config: AppConfig,
+  onEvent: (event: SyncEvent) => void,
+): Promise<FileChange[]> {
+  const channel = new Channel<SyncEvent>();
+  channel.onmessage = onEvent;
+  return invoke<FileChange[]>('start_sync', { config, onEvent: channel });
+}
+
+/** Commit staged changes and push Repo A. */
+export async function commitAndPush(
+  config: AppConfig,
+  commitMessage: string,
   onEvent: (event: SyncEvent) => void,
 ): Promise<void> {
   const channel = new Channel<SyncEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>('start_sync', { config, onEvent: channel });
+  return invoke<void>('commit_and_push', { config, commitMessage, onEvent: channel });
+}
+
+/** Discard all staged / unstaged changes in Repo A (undoes the mirror). */
+export async function discardSync(config: AppConfig): Promise<void> {
+  return invoke<void>('discard_sync', { config });
 }

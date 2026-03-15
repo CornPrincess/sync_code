@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FileChange {
+    /// "added" | "modified" | "deleted" | "renamed" | "copied" | "unknown"
+    pub status: String,
+    pub path: String,
+    /// Only set for renamed / copied files
+    pub old_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// "none" | "userpass" | "token" | "ssh"
