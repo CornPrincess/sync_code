@@ -9,6 +9,7 @@
     startSync,
     commitAndPush,
     discardSync,
+    type AppConfig,
     type SyncEvent,
     type FileChange,
   } from './lib/ipc.js';
@@ -19,6 +20,11 @@
   let lastSync = $state<string | undefined>(undefined);
   let errorMessage = $state<string | undefined>(undefined);
   let lines = $state<SyncEvent[]>([]);
+
+  // Snapshot of the config that was used for the most recent sync.
+  // commit_and_push must use this exact snapshot so that branch/auth/proxy
+  // cannot drift if the user edits settings while reviewing changes.
+  let syncedConfig = $state<AppConfig | null>(null);
 
   // Review state
   let pendingFiles = $state<FileChange[]>([]);
@@ -48,10 +54,14 @@
     const err = validate();
     if (err) { errorMessage = err; return; }
 
+    // Snapshot config so commit_and_push uses the same branch/auth/proxy even if
+    // the user edits settings while reviewing changes in the review panel.
+    syncedConfig = JSON.parse(JSON.stringify(configStore.value)) as AppConfig;
+
     lines = [];
     status = 'syncing';
     try {
-      const files = await startSync(configStore.value, (event) => {
+      const files = await startSync(syncedConfig, (event) => {
         lines = [...lines, event];
       });
       pendingFiles = files;
@@ -59,6 +69,7 @@
       commitMessage = defaultCommitMessage();
       status = 'review';
     } catch (e: unknown) {
+      syncedConfig = null;
       status = 'error';
       errorMessage = typeof e === 'string' ? e : 'An unexpected error occurred.';
     }
@@ -74,14 +85,17 @@
       return f?.old_path ? [path, f.old_path] : [path];
     });
 
+    // Use the snapshotted config to guarantee the same branch that was synced.
+    const cfg = syncedConfig ?? configStore.value;
     try {
-      await commitAndPush(configStore.value, commitMessage, pathsToStage, (event) => {
+      await commitAndPush(cfg, commitMessage, pathsToStage, (event) => {
         lines = [...lines, event];
       });
       status = 'success';
       lastSync = new Date().toLocaleTimeString();
       pendingFiles = [];
       selectedPaths = new Set();
+      syncedConfig = null;
     } catch (e: unknown) {
       status = 'error';
       errorMessage = typeof e === 'string' ? e : 'Push failed.';
@@ -89,9 +103,11 @@
   }
 
   async function handleDiscard() {
-    try { await discardSync(configStore.value); } catch { /* best effort */ }
+    const cfg = syncedConfig ?? configStore.value;
+    try { await discardSync(cfg); } catch { /* best effort */ }
     pendingFiles = [];
     selectedPaths = new Set();
+    syncedConfig = null;
     status = 'idle';
   }
 
