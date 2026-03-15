@@ -113,12 +113,19 @@ export interface BranchList {
 }
 
 /**
- * List local and remote branch names (separately) for the given repo path.
- * Runs `git fetch --prune` first to pick up the latest remote refs.
+ * List local and remote branch names from cached git refs — no network call.
  * Returns empty lists if the path is empty, doesn't exist, or isn't a git repo.
  */
 export async function listBranches(localPath: string): Promise<BranchList> {
   return invoke<BranchList>('list_branches', { localPath });
+}
+
+/**
+ * Run `git fetch --prune` (with proxy) then return the updated branch list.
+ * Call this when the user explicitly requests a refresh.
+ */
+export async function refreshBranches(localPath: string, proxy: ProxyConfig): Promise<BranchList> {
+  return invoke<BranchList>('refresh_branches', { localPath, proxy });
 }
 
 /** Run `git checkout <branch>` in the given repo. Throws on failure. */

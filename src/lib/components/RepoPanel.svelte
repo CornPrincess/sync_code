@@ -1,20 +1,23 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { listBranches, checkoutBranch, type BranchList, type RepoConfig } from '../ipc.js';
+  import { listBranches, refreshBranches, checkoutBranch, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
 
   let {
     label,
     config = $bindable(),
+    proxy,
     onchange
   }: {
     label: string;
     config: RepoConfig;
+    proxy: ProxyConfig;
     onchange?: () => void;
   } = $props();
 
   // ── Branch combobox state ──────────────────────────────────────────────────
   let branchList = $state<BranchList>({ local: [], remote: [] });
   let loadingBranches = $state(false);
+  let refreshingBranches = $state(false);
   let checkingOut = $state(false);
   let branchError = $state('');
   let dropdownOpen = $state(false);
@@ -29,6 +32,7 @@
   // Flat list for keyboard navigation
   const flatBranches = $derived([...filteredLocal, ...filteredRemote]);
 
+  // Fast load from cached git refs — no network call
   async function fetchBranches(path: string) {
     if (!path) { branchList = { local: [], remote: [] }; return; }
     loadingBranches = true;
@@ -41,14 +45,27 @@
     }
   }
 
-  // Auto-refresh when local_path changes
+  // Network refresh — runs git fetch with proxy then re-reads refs
+  async function doRefreshBranches() {
+    if (!config.local_path || refreshingBranches) return;
+    refreshingBranches = true;
+    try {
+      branchList = await refreshBranches(config.local_path, proxy);
+    } catch {
+      // keep existing list on failure
+    } finally {
+      refreshingBranches = false;
+    }
+  }
+
+  // Load cached refs whenever the repo path changes (fast, no network)
   $effect(() => { fetchBranches(config.local_path); });
 
   function openDropdown() {
     dropdownOpen = true;
     activeIdx = -1;
     branchError = '';
-    fetchBranches(config.local_path);
+    // Don't auto-fetch on every open — use the refresh button for that
   }
 
   function onBranchFocus() { openDropdown(); }
@@ -149,7 +166,9 @@
     <span class="field-label">
       Branch
       {#if loadingBranches}
-        <span class="branch-hint">fetching…</span>
+        <span class="branch-hint">loading…</span>
+      {:else if refreshingBranches}
+        <span class="branch-hint">refreshing…</span>
       {:else if checkingOut}
         <span class="branch-hint">checking out…</span>
       {:else if branchList.local.length + branchList.remote.length > 0}
@@ -191,10 +210,27 @@
       <!-- Dropdown -->
       {#if dropdownOpen}
         <div class="branch-dropdown">
+          <!-- Refresh toolbar -->
+          <div class="branch-toolbar">
+            <button
+              type="button"
+              class="branch-refresh-btn"
+              class:spinning={refreshingBranches}
+              onmousedown={(e) => { e.preventDefault(); doRefreshBranches(); }}
+              disabled={refreshingBranches}
+              title="Fetch remote branches"
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+              </svg>
+              {refreshingBranches ? 'Refreshing…' : 'Refresh remote'}
+            </button>
+          </div>
           {#if loadingBranches}
-            <div class="branch-loading-row">Fetching branches…</div>
+            <div class="branch-loading-row">Loading…</div>
           {:else if totalCount === 0}
-            <div class="branch-empty">No branches found</div>
+            <div class="branch-empty">No branches found — click Refresh to fetch from remote</div>
           {:else}
             <!-- LOCAL section -->
             {#if filteredLocal.length > 0}
@@ -543,6 +579,46 @@
     color: var(--accent-hover);
     flex-shrink: 0;
   }
+
+  /* Refresh toolbar at top of dropdown */
+  .branch-toolbar {
+    display: flex;
+    align-items: center;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  .branch-refresh-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+  }
+
+  .branch-refresh-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--accent);
+    background: rgba(35, 134, 54, 0.1);
+  }
+
+  .branch-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .branch-refresh-btn.spinning svg {
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   .branch-loading-row,
   .branch-empty {

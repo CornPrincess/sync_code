@@ -112,12 +112,14 @@
       <RepoPanel
         label="Repo A (target)"
         bind:config={configStore.value.repo_a}
+        proxy={configStore.value.proxy}
         onchange={onConfigChange}
       />
       <div class="arrow" aria-hidden="true">←</div>
       <RepoPanel
         label="Repo B (source)"
         bind:config={configStore.value.repo_b}
+        proxy={configStore.value.proxy}
         onchange={onConfigChange}
       />
     </section>

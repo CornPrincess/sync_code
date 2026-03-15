@@ -338,26 +338,50 @@ pub struct BranchList {
     pub remote: Vec<String>,
 }
 
-/// Return local and remote branch names (separated) for a given repo path.
-/// Runs `git fetch --prune` first to pick up the latest remote branches.
-/// Returns empty lists (no error) if the path doesn't exist or isn't a git repo.
+/// Return local and remote branch names from cached refs — no network call.
+/// Returns empty lists if the path doesn't exist or isn't a git repo.
 #[tauri::command]
 pub async fn list_branches(local_path: String) -> BranchList {
     let path = std::path::Path::new(&local_path);
     if local_path.is_empty() || !path.exists() {
         return BranchList { local: vec![], remote: vec![] };
     }
-    // Silently fetch to refresh remote-tracking refs
-    let _ = Command::new("git")
-        .args(["fetch", "--prune"])
-        .current_dir(path)
-        .output()
-        .await;
+    branches_from_refs(path).await
+}
 
-    // Local branches
+/// Run `git fetch --prune` (with proxy) then return the updated branch list.
+/// Use this when the user explicitly requests a refresh.
+#[tauri::command]
+pub async fn refresh_branches(local_path: String, proxy: Option<crate::models::ProxyConfig>) -> BranchList {
+    let path = std::path::Path::new(&local_path);
+    if local_path.is_empty() || !path.exists() {
+        return BranchList { local: vec![], remote: vec![] };
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["fetch", "--prune"]).current_dir(path);
+    if let Some(ref p) = proxy {
+        if p.enabled {
+            if !p.http_proxy.is_empty() {
+                cmd.env("http_proxy", &p.http_proxy);
+                cmd.env("HTTP_PROXY", &p.http_proxy);
+            }
+            if !p.https_proxy.is_empty() {
+                cmd.env("https_proxy", &p.https_proxy);
+                cmd.env("HTTPS_PROXY", &p.https_proxy);
+            }
+            if !p.no_proxy.is_empty() {
+                cmd.env("no_proxy", &p.no_proxy);
+                cmd.env("NO_PROXY", &p.no_proxy);
+            }
+        }
+    }
+    let _ = cmd.output().await;
+    branches_from_refs(path).await
+}
+
+/// Read local + remote branch names from the cached git refs (no network).
+async fn branches_from_refs(path: &std::path::Path) -> BranchList {
     let local = branch_list(path, &["branch", "--format=%(refname:short)"]).await;
-
-    // Remote tracking branches — strip "origin/" prefix, drop HEAD
     let mut remote = branch_list(path, &["branch", "-r", "--format=%(refname:short)"]).await;
     remote = remote
         .into_iter()
@@ -368,7 +392,6 @@ pub async fn list_branches(local_path: String) -> BranchList {
         .collect();
     remote.sort();
     remote.dedup();
-
     BranchList { local, remote }
 }
 
