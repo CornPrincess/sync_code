@@ -61,14 +61,20 @@
   // Load cached refs whenever the repo path changes (fast, no network)
   $effect(() => { fetchBranches(config.local_path); });
 
+  // Track what the branch value was when the input gained focus, so we can
+  // detect manual edits on blur and trigger a checkout.
+  let focusedBranch = '';
+
   function openDropdown() {
     dropdownOpen = true;
     activeIdx = -1;
     branchError = '';
-    // Don't auto-fetch on every open — use the refresh button for that
   }
 
-  function onBranchFocus() { openDropdown(); }
+  function onBranchFocus() {
+    focusedBranch = config.branch;
+    openDropdown();
+  }
 
   function onBranchInput() {
     dropdownOpen = true;
@@ -86,15 +92,30 @@
       activeIdx = Math.max(activeIdx - 1, 0);
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (activeIdx >= 0) selectBranch(flatBranches[activeIdx]);
-      else dropdownOpen = false;
+      if (activeIdx >= 0) {
+        selectBranch(flatBranches[activeIdx]);
+      } else {
+        // User pressed Enter on manually-typed text → treat as branch selection
+        const typed = config.branch.trim();
+        if (typed) selectBranch(typed);
+        else dropdownOpen = false;
+      }
     } else if (e.key === 'Escape') {
       dropdownOpen = false;
     }
   }
 
   function onBranchBlur() {
-    setTimeout(() => { dropdownOpen = false; }, 150);
+    setTimeout(() => {
+      dropdownOpen = false;
+      // If the user manually edited the branch name (didn't pick from dropdown),
+      // trigger a checkout. selectBranch() updates focusedBranch so a prior
+      // dropdown click won't fire a second checkout here.
+      const typed = config.branch.trim();
+      if (typed && typed !== focusedBranch) {
+        selectBranch(typed);
+      }
+    }, 150);
   }
 
   function toggleDropdown(e: MouseEvent) {
@@ -106,6 +127,7 @@
   async function selectBranch(branch: string) {
     dropdownOpen = false;
     config.branch = branch;
+    focusedBranch = branch; // prevent onBranchBlur from triggering a duplicate checkout
     branchError = '';
     if (!config.local_path) { onchange?.(); return; }
     checkingOut = true;

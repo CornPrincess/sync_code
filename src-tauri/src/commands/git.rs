@@ -385,25 +385,28 @@ pub async fn refresh_branches(local_path: String, proxy: Option<crate::models::P
 }
 
 /// Read local + remote branch names from the cached git refs (no network).
-/// Uses `git for-each-ref` which reliably enumerates all refs regardless of
-/// how the repo was cloned (including --single-branch clones).
+/// Uses `git for-each-ref` with full %(refname) for deterministic prefix stripping,
+/// avoiding %(refname:short) ambiguity that depends on local branch names.
 async fn branches_from_refs(path: &std::path::Path) -> BranchList {
-    // Local branches
-    let local = branch_list(
+    // Local: refs/heads/main → "main"
+    let raw_local = branch_list(
         path,
-        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
     ).await;
+    let local: Vec<String> = raw_local
+        .into_iter()
+        .filter_map(|b| b.strip_prefix("refs/heads/").map(|s| s.to_string()))
+        .collect();
 
-    // Remote tracking refs under origin/
+    // Remote: refs/remotes/origin/main → "main"
     let raw_remote = branch_list(
         path,
-        &["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+        &["for-each-ref", "--format=%(refname)", "refs/remotes/origin/"],
     ).await;
     let mut remote: Vec<String> = raw_remote
         .into_iter()
         .filter_map(|b| {
-            // refname:short for refs/remotes/origin/main => "origin/main"
-            let name = b.strip_prefix("origin/").unwrap_or(&b).to_string();
+            let name = b.strip_prefix("refs/remotes/origin/")?.to_string();
             if name == "HEAD" || name.is_empty() { None } else { Some(name) }
         })
         .collect();
