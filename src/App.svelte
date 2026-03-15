@@ -4,17 +4,34 @@
   import LogViewer from './lib/components/LogViewer.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import { configStore } from './lib/stores/config.svelte.js';
-  import { startSync } from './lib/ipc.js';
+  import FileTree from './lib/components/FileTree.svelte';
+  import {
+    startSync,
+    commitAndPush,
+    discardSync,
+    type SyncEvent,
+    type FileChange,
+  } from './lib/ipc.js';
 
-  type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
+  type SyncStatus = 'idle' | 'syncing' | 'review' | 'pushing' | 'success' | 'error';
 
   let status = $state<SyncStatus>('idle');
   let lastSync = $state<string | undefined>(undefined);
   let errorMessage = $state<string | undefined>(undefined);
+  let lines = $state<SyncEvent[]>([]);
+
+  // Review state
+  let pendingFiles = $state<FileChange[]>([]);
+  let selectedPaths = $state(new Set<string>());
+  let commitMessage = $state('');
 
   onMount(() => {
     configStore.load();
   });
+
+  function defaultCommitMessage(): string {
+    return `sync: ${new Date().toLocaleString('sv').replace('T', ' ')}`;
+  }
 
   function validate(): string | null {
     const a = configStore.value.repo_a;
@@ -29,20 +46,53 @@
   async function handleSync() {
     errorMessage = undefined;
     const err = validate();
-    if (err) {
-      errorMessage = err;
-      return;
-    }
+    if (err) { errorMessage = err; return; }
 
+    lines = [];
     status = 'syncing';
     try {
-      await startSync(configStore.value);
-      status = 'success';
-      lastSync = new Date().toLocaleTimeString();
+      const files = await startSync(configStore.value, (event) => {
+        lines = [...lines, event];
+      });
+      pendingFiles = files;
+      selectedPaths = new Set(files.map((f) => f.path)); // select all by default
+      commitMessage = defaultCommitMessage();
+      status = 'review';
     } catch (e: unknown) {
       status = 'error';
       errorMessage = typeof e === 'string' ? e : 'An unexpected error occurred.';
     }
+  }
+
+  async function handlePush() {
+    errorMessage = undefined;
+    status = 'pushing';
+
+    // For renamed files include both new + old path so git stages the deletion too
+    const pathsToStage = [...selectedPaths].flatMap((path) => {
+      const f = pendingFiles.find((x) => x.path === path);
+      return f?.old_path ? [path, f.old_path] : [path];
+    });
+
+    try {
+      await commitAndPush(configStore.value, commitMessage, pathsToStage, (event) => {
+        lines = [...lines, event];
+      });
+      status = 'success';
+      lastSync = new Date().toLocaleTimeString();
+      pendingFiles = [];
+      selectedPaths = new Set();
+    } catch (e: unknown) {
+      status = 'error';
+      errorMessage = typeof e === 'string' ? e : 'Push failed.';
+    }
+  }
+
+  async function handleDiscard() {
+    try { await discardSync(configStore.value); } catch { /* best effort */ }
+    pendingFiles = [];
+    selectedPaths = new Set();
+    status = 'idle';
   }
 
   function onConfigChange() {
@@ -56,20 +106,63 @@
     <p class="app-subtitle">Sync code from Repo B into Repo A, then push.</p>
   </header>
 
-  <section class="repo-grid">
-    <RepoPanel
-      label="Repo A (target)"
-      bind:config={configStore.value.repo_a}
-      onchange={onConfigChange}
-    />
-    <div class="arrow" aria-hidden="true">←</div>
-    <RepoPanel
-      label="Repo B (source)"
-      bind:config={configStore.value.repo_b}
-      onchange={onConfigChange}
-    />
-  </section>
+  <!-- Repo configuration + proxy -->
+  <div class="config-area">
+    <section class="repo-grid">
+      <RepoPanel
+        label="Repo A (target)"
+        bind:config={configStore.value.repo_a}
+        proxy={configStore.value.proxy}
+        onchange={onConfigChange}
+      />
+      <div class="arrow" aria-hidden="true">←</div>
+      <RepoPanel
+        label="Repo B (source)"
+        bind:config={configStore.value.repo_b}
+        proxy={configStore.value.proxy}
+        onchange={onConfigChange}
+      />
+    </section>
 
+    <section class="proxy-section">
+      <details class="proxy-details">
+        <summary class="proxy-summary">
+          Network Proxy
+          {#if configStore.value.proxy.enabled}
+            <span class="proxy-badge">Enabled</span>
+          {/if}
+        </summary>
+        <div class="proxy-body">
+          <label class="checkbox-option">
+            <input
+              type="checkbox"
+              bind:checked={configStore.value.proxy.enabled}
+              onchange={onConfigChange}
+            />
+            <span>Enable proxy for all git operations</span>
+          </label>
+          {#if configStore.value.proxy.enabled}
+            <div class="proxy-fields">
+              <label class="field">
+                <span class="field-label">HTTP Proxy</span>
+                <input type="text" bind:value={configStore.value.proxy.http_proxy} onchange={onConfigChange} placeholder="http://proxy.example.com:8080" class="input" />
+              </label>
+              <label class="field">
+                <span class="field-label">HTTPS Proxy</span>
+                <input type="text" bind:value={configStore.value.proxy.https_proxy} onchange={onConfigChange} placeholder="http://proxy.example.com:8080" class="input" />
+              </label>
+              <label class="field">
+                <span class="field-label">No Proxy (comma-separated)</span>
+                <input type="text" bind:value={configStore.value.proxy.no_proxy} onchange={onConfigChange} placeholder="localhost,127.0.0.1" class="input" />
+              </label>
+            </div>
+          {/if}
+        </div>
+      </details>
+    </section>
+  </div>
+
+  <!-- Action bar -->
   <section class="actions">
     {#if errorMessage}
       <div class="error-banner" role="alert">{errorMessage}</div>
@@ -79,15 +172,77 @@
       <button
         class="btn-sync"
         onclick={handleSync}
-        disabled={status === 'syncing'}
+        disabled={status === 'syncing' || status === 'review' || status === 'pushing'}
       >
         {status === 'syncing' ? 'Syncing…' : 'Sync Now'}
       </button>
     </div>
   </section>
 
+  <!-- ─── Review panel (appears after sync completes) ──────────────────── -->
+  {#if status === 'review' || status === 'pushing'}
+    <section class="review-panel">
+      <div class="review-header">
+        <span class="review-title">
+          {#if pendingFiles.length === 0}
+            ✔ Nothing to push — Repo A is already up to date
+          {:else}
+            Review Changes
+          {/if}
+        </span>
+        {#if pendingFiles.length > 0}
+          <span class="review-count">{pendingFiles.length} file{pendingFiles.length !== 1 ? 's' : ''}</span>
+        {/if}
+      </div>
+
+      {#if pendingFiles.length > 0}
+        <div class="review-body">
+          <!-- Left: hierarchical file tree with checkboxes -->
+          <div class="file-tree-wrap">
+            <FileTree files={pendingFiles} bind:selected={selectedPaths} />
+          </div>
+
+          <!-- Right: commit message + buttons -->
+          <div class="commit-pane">
+            <label class="field">
+              <span class="field-label">Commit Message</span>
+              <textarea
+                class="commit-msg"
+                bind:value={commitMessage}
+                rows="5"
+                placeholder="Describe what changed…"
+                disabled={status === 'pushing'}
+              ></textarea>
+            </label>
+            <p class="commit-hint">Leave blank to use the default timestamp message.</p>
+
+            <div class="commit-actions">
+              <button class="btn-discard" onclick={handleDiscard} disabled={status === 'pushing'}>
+                Discard
+              </button>
+              <button
+                class="btn-push"
+                onclick={handlePush}
+                disabled={status === 'pushing' || selectedPaths.size === 0}
+                title={selectedPaths.size === 0 ? 'Select at least one file' : ''}
+              >
+                {status === 'pushing' ? 'Pushing…' : `Commit & Push (${selectedPaths.size}) →`}
+              </button>
+            </div>
+          </div>
+        </div>
+      {:else}
+        <!-- Nothing to push -->
+        <div class="review-empty-actions">
+          <button class="btn-discard" onclick={handleDiscard}>Done</button>
+        </div>
+      {/if}
+    </section>
+  {/if}
+
+  <!-- Output log -->
   <section class="log-section">
-    <LogViewer />
+    <LogViewer bind:lines />
   </section>
 </main>
 
@@ -95,16 +250,13 @@
   .app {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
     padding: 24px;
-    height: 100vh;
+    min-height: 100vh;
     box-sizing: border-box;
-    overflow: hidden;
   }
 
-  .app-header {
-    flex-shrink: 0;
-  }
+  .app-header { flex-shrink: 0; }
 
   .app-title {
     margin: 0;
@@ -114,16 +266,22 @@
   }
 
   .app-subtitle {
-    margin: 4px 0 0 0;
+    margin: 4px 0 0;
     font-size: 0.8rem;
     color: var(--text-muted);
+  }
+
+  /* Config area */
+  .config-area {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
   }
 
   .repo-grid {
     display: flex;
     gap: 12px;
     align-items: flex-start;
-    flex-shrink: 0;
   }
 
   .arrow {
@@ -133,9 +291,104 @@
     flex-shrink: 0;
   }
 
-  .actions {
-    flex-shrink: 0;
+  /* Proxy section */
+  .proxy-details {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
   }
+
+  .proxy-summary {
+    padding: 8px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    list-style: none;
+  }
+
+  .proxy-summary::-webkit-details-marker { display: none; }
+
+  .proxy-summary::before {
+    content: '▶';
+    font-size: 0.6rem;
+    transition: transform 0.15s;
+    color: var(--text-muted);
+  }
+
+  .proxy-details[open] .proxy-summary::before { transform: rotate(90deg); }
+
+  .proxy-badge {
+    font-size: 0.7rem;
+    background: var(--color-warn);
+    color: #000;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .proxy-body {
+    padding: 12px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .proxy-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+  }
+
+  .proxy-fields .field:last-child { grid-column: 1 / -1; }
+
+  .checkbox-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .checkbox-option input[type='checkbox'] { accent-color: var(--accent); cursor: pointer; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+
+  .field-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .input {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-family: var(--font-mono);
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+
+  .input:focus { outline: none; border-color: var(--accent); }
+
+  /* Action bar */
+  .actions { flex-shrink: 0; }
 
   .actions-row {
     display: flex;
@@ -165,18 +418,137 @@
     transition: background 0.15s, opacity 0.15s;
   }
 
-  .btn-sync:hover:not(:disabled) {
-    background: var(--accent-hover);
+  .btn-sync:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-sync:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ─── Review panel ──────────────────────────────────────────────────── */
+  .review-panel {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    overflow: hidden;
   }
 
-  .btn-sync:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .review-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #1c2333;
+    border-bottom: 1px solid var(--border);
   }
 
-  .log-section {
+  .review-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
     flex: 1;
-    min-height: 0;
+  }
+
+  .review-count {
+    font-size: 0.75rem;
+    background: var(--accent);
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+
+  .review-body {
+    display: flex;
+    gap: 0;
+    min-height: 220px;
+    max-height: 340px;
+  }
+
+  /* File tree — left column */
+  .file-tree-wrap {
+    flex: 1 1 0;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Commit pane — right column */
+  .commit-pane {
+    flex: 0 0 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .commit-msg {
+    width: 100%;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    padding: 8px 10px;
+    resize: vertical;
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+
+  .commit-msg:focus { outline: none; border-color: var(--accent); }
+  .commit-msg:disabled { opacity: 0.5; }
+
+  .commit-hint {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .commit-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: auto;
+  }
+
+  .btn-discard {
+    padding: 8px 16px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .btn-discard:hover:not(:disabled) { border-color: var(--color-error); color: var(--color-error); }
+  .btn-discard:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn-push {
+    padding: 8px 18px;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+
+  .btn-push:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-push:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .review-empty-actions {
+    padding: 14px 16px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* Log */
+  .log-section {
+    height: 380px;
     display: flex;
     flex-direction: column;
   }

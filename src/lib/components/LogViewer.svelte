@@ -1,21 +1,20 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
-  import { onSyncLog, type SyncEvent } from '../ipc.js';
+  import { tick } from 'svelte';
+  import type { SyncEvent } from '../ipc.js';
 
-  let lines = $state<SyncEvent[]>([]);
+  let {
+    lines = $bindable<SyncEvent[]>([]),
+  }: { lines: SyncEvent[] } = $props();
+
   let container: HTMLElement;
-  let unlisten: (() => void) | null = null;
 
-  onMount(async () => {
-    unlisten = await onSyncLog(async (event) => {
-      lines.push(event);
-      await tick();
-      container?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    });
-  });
-
-  onDestroy(() => {
-    unlisten?.();
+  // Auto-scroll whenever lines array grows
+  $effect(() => {
+    if (lines.length > 0) {
+      tick().then(() => {
+        container?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      });
+    }
   });
 
   function clear() {
@@ -23,7 +22,9 @@
   }
 
   async function copyToClipboard() {
-    const text = lines.map((l) => `[${l.level}] ${l.message}`).join('\n');
+    const text = lines
+      .map((l) => `[${l.timestamp}] [${l.level.padEnd(7)}] ${l.message}`)
+      .join('\n');
     await navigator.clipboard.writeText(text);
   }
 </script>
@@ -42,8 +43,9 @@
     {#if lines.length === 0}
       <span class="log-empty">No output yet. Press "Sync Now" to start.</span>
     {:else}
-      {#each lines as line (line)}
+      {#each lines as line, i (i)}
         <div class="log-line log-{line.level}">
+          <span class="log-ts">{line.timestamp}</span>
           <span class="log-prefix">[{line.level}]</span>
           <span class="log-msg">{line.message}</span>
         </div>
@@ -59,8 +61,7 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 200px;
+    height: 100%;
   }
 
   .log-header {
@@ -70,6 +71,7 @@
     padding: 8px 12px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
   }
 
   .log-title {
@@ -122,14 +124,21 @@
     padding: 1px 0;
   }
 
+  .log-ts {
+    color: var(--text-muted);
+    flex-shrink: 0;
+    user-select: none;
+  }
+
   .log-prefix {
     opacity: 0.5;
     user-select: none;
     flex-shrink: 0;
+    min-width: 52px; /* [success] is widest */
   }
 
-  .log-info .log-msg { color: var(--text-primary); }
-  .log-warn .log-msg { color: var(--color-warn); }
-  .log-error .log-msg { color: var(--color-error); }
+  .log-info .log-msg    { color: var(--text-primary); }
+  .log-warn .log-msg    { color: var(--color-warn); }
+  .log-error .log-msg   { color: var(--color-error); }
   .log-success .log-msg { color: var(--color-success); font-weight: 600; }
 </style>

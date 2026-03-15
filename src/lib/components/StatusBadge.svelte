@@ -3,15 +3,17 @@
     status,
     lastSync
   }: {
-    status: 'idle' | 'syncing' | 'success' | 'error';
+    status: 'idle' | 'syncing' | 'review' | 'pushing' | 'success' | 'error';
     lastSync?: string;
   } = $props();
 
   const labels: Record<typeof status, string> = {
     idle: 'Ready',
     syncing: 'Syncing…',
+    review: 'Pending Push',
+    pushing: 'Pushing…',
     success: 'Sync OK',
-    error: 'Sync Failed'
+    error: 'Failed',
   };
 </script>
 
@@ -47,6 +49,19 @@
   }
 
   .badge-syncing {
+    background: #1e3a5f;
+    color: #60a5fa;
+    border: 1px solid #2563eb44;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .badge-review {
+    background: #2d2a1e;
+    color: var(--color-warn);
+    border: 1px solid #e3b34144;
+  }
+
+  .badge-pushing {
     background: #1e3a5f;
     color: #60a5fa;
     border: 1px solid #2563eb44;
