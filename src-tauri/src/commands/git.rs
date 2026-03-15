@@ -286,8 +286,8 @@ pub async fn is_dirty(path: &Path) -> Result<bool> {
 
 /// Discard all staged and unstaged changes in `path`, and remove untracked files.
 pub async fn discard_changes(path: &Path) -> Result<()> {
-    Command::new("git").args(["restore", "--staged", "."]).current_dir(path).output().await?;
-    Command::new("git").args(["restore", "."]).current_dir(path).output().await?;
+    Command::new("git").args(["reset", "HEAD", "."]).current_dir(path).output().await?;
+    Command::new("git").args(["checkout", "--", "."]).current_dir(path).output().await?;
     Command::new("git").args(["clean", "-fd"]).current_dir(path).output().await?;
     Ok(())
 }
@@ -303,7 +303,7 @@ pub async fn stage_selected(
     proxy: Option<&ProxyConfig>,
 ) -> Result<()> {
     // Unstage all
-    run_git(log, path, &["restore", "--staged", "."], None, auth, proxy).await?;
+    run_git(log, path, &["reset", "HEAD", "."], None, auth, proxy).await?;
 
     if paths_to_add.is_empty() {
         emit_log(log, SyncEvent::info("  No paths to stage."));
@@ -322,7 +322,7 @@ pub async fn stage_selected(
 /// After commit+push, revert any remaining working-tree changes so that
 /// unselected mirror changes don't linger in Repo A.
 pub async fn revert_remaining(path: &Path) -> Result<()> {
-    Command::new("git").args(["restore", "."]).current_dir(path).output().await?;
+    Command::new("git").args(["checkout", "--", "."]).current_dir(path).output().await?;
     Command::new("git").args(["clean", "-fd"]).current_dir(path).output().await?;
     Ok(())
 }
