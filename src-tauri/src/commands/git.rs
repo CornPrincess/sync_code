@@ -270,11 +270,16 @@ pub async fn git_push_only(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) 
         )),
     );
 
+    // Use HEAD:refs/heads/<branch> so the push targets the correct remote branch
+    // regardless of what the local branch name is.  git_pull uses `git reset --hard
+    // origin/<branch>` which moves the *current* local branch pointer to the desired
+    // commit without renaming it, so we cannot rely on the local branch name matching.
+    let refspec = format!("HEAD:refs/heads/{branch}");
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth, &repo.platform) {
         run_git(
             log,
             path,
-            &["-c", "credential.helper=", "push", "--progress", &aurl, branch],
+            &["-c", "credential.helper=", "push", "--progress", &aurl, &refspec],
             Some(&format!("push --progress <auth-url> {branch} (auth: {})", repo.auth.auth_type)),
             Some(&repo.auth),
             Some(proxy),
@@ -284,7 +289,7 @@ pub async fn git_push_only(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) 
         run_git(
             log,
             path,
-            &["push", "--progress", "origin", branch],
+            &["push", "--progress", "origin", &refspec],
             None,
             Some(&repo.auth),
             Some(proxy),
