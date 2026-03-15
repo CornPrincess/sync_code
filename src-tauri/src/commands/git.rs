@@ -516,37 +516,23 @@ pub async fn checkout_and_pull(
         }
     }
 
-    // 2. Fetch the specific branch with an explicit refspec.
-    //    Using a targeted refspec (instead of plain "git fetch origin") ensures:
-    //    - single-branch clones that only track one branch still fetch the new branch
-    //    - the auth-URL path fetches exactly the right branch (not just the remote HEAD)
-    let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
-    let mut fetch_cmd = Command::new("git");
+    // 2. Pull latest code — use `git pull origin <branch>` with explicit remote
+    //    and branch so it works on single-branch clones too.
+    //    For userpass/token auth embed credentials in the URL.
+    let mut pull_cmd = Command::new("git");
     if let Some(aurl) = auth_url(&remote_url, &auth) {
-        fetch_cmd.args(["-c", "credential.helper=", "fetch", &aurl, &refspec]);
+        pull_cmd.args(["-c", "credential.helper=", "pull", &aurl, &branch]);
     } else {
-        fetch_cmd.args(["fetch", "origin", &refspec]);
+        pull_cmd.args(["pull", "origin", &branch]);
     }
-    fetch_cmd.current_dir(path);
-    apply_proxy_env(&mut fetch_cmd, &proxy);
-    apply_auth_env(&mut fetch_cmd, &auth);
+    pull_cmd.current_dir(path);
+    apply_proxy_env(&mut pull_cmd, &proxy);
+    apply_auth_env(&mut pull_cmd, &auth);
 
-    let fetch_out = fetch_cmd.output().await?;
-    if !fetch_out.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_out.stderr);
-        return Err(AppError::Git(format!("fetch: {}", stderr.trim())));
-    }
-
-    // 3. Reset working tree to the freshly-fetched remote ref
-    let target = format!("origin/{branch}");
-    let reset_out = Command::new("git")
-        .args(["reset", "--hard", &target])
-        .current_dir(path)
-        .output()
-        .await?;
-    if !reset_out.status.success() {
-        let stderr = String::from_utf8_lossy(&reset_out.stderr);
-        return Err(AppError::Git(format!("reset: {}", stderr.trim())));
+    let pull_out = pull_cmd.output().await?;
+    if !pull_out.status.success() {
+        let stderr = String::from_utf8_lossy(&pull_out.stderr);
+        return Err(AppError::Git(format!("pull: {}", stderr.trim())));
     }
 
     Ok(())
