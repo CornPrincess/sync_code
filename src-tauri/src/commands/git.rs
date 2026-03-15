@@ -332,6 +332,7 @@ pub async fn revert_remaining(path: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Return all local and remote branch names for a given repo path.
+/// Runs `git fetch --prune` first to pick up the latest remote branches.
 /// Returns an empty list (no error) if the path doesn't exist or isn't a git repo.
 #[tauri::command]
 pub async fn list_branches(local_path: String) -> Vec<String> {
@@ -339,6 +340,13 @@ pub async fn list_branches(local_path: String) -> Vec<String> {
     if local_path.is_empty() || !path.exists() {
         return vec![];
     }
+    // Silently fetch to refresh remote-tracking refs; ignore errors (no remote, offline, etc.)
+    let _ = Command::new("git")
+        .args(["fetch", "--prune"])
+        .current_dir(path)
+        .output()
+        .await;
+
     let Ok(out) = Command::new("git")
         .args(["branch", "-a", "--format=%(refname:short)"])
         .current_dir(path)
@@ -368,6 +376,28 @@ pub async fn list_branches(local_path: String) -> Vec<String> {
     branches.sort();
     branches.dedup();
     branches
+}
+
+/// Checkout the given branch in the repo at `local_path`.
+#[tauri::command]
+pub async fn checkout_branch(local_path: String, branch: String) -> Result<()> {
+    let path = std::path::Path::new(&local_path);
+    if local_path.is_empty() || !path.exists() {
+        return Err(AppError::Validation("Local path does not exist".into()));
+    }
+    if branch.is_empty() {
+        return Err(AppError::Validation("Branch name is empty".into()));
+    }
+    let out = Command::new("git")
+        .args(["checkout", &branch])
+        .current_dir(path)
+        .output()
+        .await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(AppError::Git(stderr.trim().to_string()));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

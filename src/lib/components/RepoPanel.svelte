@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { listBranches, type RepoConfig } from '../ipc.js';
+  import { listBranches, checkoutBranch, type RepoConfig } from '../ipc.js';
 
   let {
     label,
@@ -12,11 +12,19 @@
     onchange?: () => void;
   } = $props();
 
-  // Unique datalist id per panel instance
-  const listId = $derived(`branches-${label.replace(/\s+/g, '-').toLowerCase()}`);
-
+  // ── Branch combobox state ──────────────────────────────────────────────────
   let branches = $state<string[]>([]);
   let loadingBranches = $state(false);
+  let checkingOut = $state(false);
+  let branchError = $state('');
+  let dropdownOpen = $state(false);
+  let activeIdx = $state(-1);
+
+  const filteredBranches = $derived(
+    config.branch
+      ? branches.filter((b) => b.toLowerCase().includes(config.branch.toLowerCase()))
+      : branches
+  );
 
   async function fetchBranches(path: string) {
     if (!path) { branches = []; return; }
@@ -30,9 +38,61 @@
     }
   }
 
-  // Refresh branch list whenever local_path changes
+  // Auto-refresh when local_path changes (initial load)
   $effect(() => { fetchBranches(config.local_path); });
 
+  function onBranchFocus() {
+    dropdownOpen = true;
+    activeIdx = -1;
+    branchError = '';
+    // Refresh (fetch + list) every time the user focuses the field
+    fetchBranches(config.local_path);
+  }
+
+  function onBranchInput() {
+    dropdownOpen = true;
+    activeIdx = -1;
+    branchError = '';
+  }
+
+  function onBranchKeydown(e: KeyboardEvent) {
+    if (!dropdownOpen || filteredBranches.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIdx = Math.min(activeIdx + 1, filteredBranches.length - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIdx = Math.max(activeIdx - 1, 0);
+    } else if (e.key === 'Enter' && activeIdx >= 0) {
+      e.preventDefault();
+      selectBranch(filteredBranches[activeIdx]);
+    } else if (e.key === 'Escape') {
+      dropdownOpen = false;
+    }
+  }
+
+  function onBranchBlur() {
+    // Delay so a mousedown on a dropdown item fires before the dropdown hides
+    setTimeout(() => { dropdownOpen = false; }, 150);
+  }
+
+  async function selectBranch(branch: string) {
+    dropdownOpen = false;
+    config.branch = branch;
+    branchError = '';
+    if (!config.local_path) { onchange?.(); return; }
+    checkingOut = true;
+    try {
+      await checkoutBranch(config.local_path, branch);
+      onchange?.();
+    } catch (e) {
+      branchError = String(e).replace(/^Git error:\s*/i, '');
+    } finally {
+      checkingOut = false;
+    }
+  }
+
+  // ── File pickers ───────────────────────────────────────────────────────────
   async function browseFolder() {
     const selected = await open({ directory: true, multiple: false });
     if (typeof selected === 'string') {
@@ -79,30 +139,55 @@
     />
   </label>
 
-  <label class="field">
+  <!-- Branch combobox -->
+  <div class="field">
     <span class="field-label">
       Branch
-      {#if loadingBranches}
-        <span class="branch-loading">…</span>
+      {#if loadingBranches || checkingOut}
+        <span class="branch-status">
+          {loadingBranches ? 'fetching…' : 'checking out…'}
+        </span>
       {:else if branches.length > 0}
         <span class="branch-count">{branches.length}</span>
       {/if}
     </span>
-    <input
-      type="text"
-      bind:value={config.branch}
-      onchange={onchange}
-      placeholder="main"
-      list={listId}
-      class="input branch-input"
-      autocomplete="off"
-    />
-    <datalist id={listId}>
-      {#each branches as b}
-        <option value={b}></option>
-      {/each}
-    </datalist>
-  </label>
+
+    <div class="branch-wrap">
+      <input
+        type="text"
+        bind:value={config.branch}
+        onfocus={onBranchFocus}
+        oninput={onBranchInput}
+        onkeydown={onBranchKeydown}
+        onblur={onBranchBlur}
+        placeholder="main"
+        class="input branch-input"
+        class:input-error={!!branchError}
+        autocomplete="off"
+        spellcheck="false"
+      />
+
+      {#if dropdownOpen && filteredBranches.length > 0}
+        <div class="branch-dropdown">
+          {#each filteredBranches as b, i}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="branch-option"
+              class:active={i === activeIdx}
+              onmousedown={() => selectBranch(b)}
+            >
+              {b}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    {#if branchError}
+      <span class="branch-error">{branchError}</span>
+    {/if}
+  </div>
 
   <!-- Authentication section -->
   <details class="auth-details">
@@ -219,6 +304,9 @@
   }
 
   .field-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 0.8rem;
     font-weight: 500;
     color: var(--text-secondary);
@@ -253,12 +341,13 @@
     border-color: var(--accent);
   }
 
-  .branch-input {
-    max-width: 240px;
+  .input-error {
+    border-color: var(--color-error) !important;
   }
 
-  .branch-loading {
-    font-size: 0.75rem;
+  /* ── Branch combobox ───────────────────────────────────────────────────── */
+  .branch-status {
+    font-size: 0.72rem;
     color: var(--text-muted);
     font-weight: 400;
     font-style: italic;
@@ -278,6 +367,54 @@
     text-transform: none;
   }
 
+  .branch-wrap {
+    position: relative;
+    max-width: 240px;
+  }
+
+  .branch-input {
+    width: 100%;
+  }
+
+  .branch-dropdown {
+    position: absolute;
+    top: calc(100% + 3px);
+    left: 0;
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    max-height: 180px;
+    overflow-y: auto;
+    z-index: 100;
+  }
+
+  .branch-option {
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.08s;
+  }
+
+  .branch-option:hover,
+  .branch-option.active {
+    background: rgba(35, 134, 54, 0.15);
+    color: var(--accent-hover);
+  }
+
+  .branch-error {
+    font-size: 0.75rem;
+    color: var(--color-error);
+    line-height: 1.4;
+  }
+
+  /* ── Buttons ───────────────────────────────────────────────────────────── */
   .btn-browse {
     padding: 8px 14px;
     background: var(--btn-secondary-bg);
@@ -294,7 +431,7 @@
     background: var(--btn-secondary-hover);
   }
 
-  /* Authentication section */
+  /* ── Authentication section ────────────────────────────────────────────── */
   .auth-details {
     border: 1px solid var(--border);
     border-radius: 6px;

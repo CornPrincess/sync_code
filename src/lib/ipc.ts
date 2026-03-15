@@ -109,8 +109,14 @@ export async function discardSync(config: AppConfig): Promise<void> {
 
 /**
  * List all local + remote branch names for the given repo path.
+ * Runs `git fetch --prune` first to pick up the latest remote refs.
  * Returns [] if the path is empty, doesn't exist, or isn't a git repo.
  */
 export async function listBranches(localPath: string): Promise<string[]> {
   return invoke<string[]>('list_branches', { localPath });
+}
+
+/** Run `git checkout <branch>` in the given repo. Throws on failure. */
+export async function checkoutBranch(localPath: string, branch: string): Promise<void> {
+  return invoke<void>('checkout_branch', { localPath, branch });
 }
