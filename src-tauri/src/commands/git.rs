@@ -328,6 +328,41 @@ pub async fn revert_remaining(path: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Env-var helpers (proxy / auth) for bare Command invocations
+// ---------------------------------------------------------------------------
+
+fn apply_proxy_env(cmd: &mut Command, proxy: &ProxyConfig) {
+    if !proxy.enabled { return; }
+    if !proxy.http_proxy.is_empty() {
+        cmd.env("http_proxy", &proxy.http_proxy);
+        cmd.env("HTTP_PROXY", &proxy.http_proxy);
+    }
+    if !proxy.https_proxy.is_empty() {
+        cmd.env("https_proxy", &proxy.https_proxy);
+        cmd.env("HTTPS_PROXY", &proxy.https_proxy);
+    }
+    if !proxy.no_proxy.is_empty() {
+        cmd.env("no_proxy", &proxy.no_proxy);
+        cmd.env("NO_PROXY", &proxy.no_proxy);
+    }
+}
+
+fn apply_auth_env(cmd: &mut Command, auth: &AuthConfig) {
+    if let Some(ssh_cmd) = ssh_command(auth) {
+        cmd.env("GIT_SSH_COMMAND", ssh_cmd);
+    }
+    let suppress_prompt = match auth.auth_type.as_str() {
+        "userpass" => !auth.username.is_empty(),
+        "token"    => !auth.token.is_empty(),
+        "ssh"      => !auth.ssh_key_path.is_empty(),
+        _          => false,
+    };
+    if suppress_prompt {
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -358,28 +393,10 @@ pub async fn refresh_branches(local_path: String, proxy: Option<crate::models::P
         return BranchList { local: vec![], remote: vec![] };
     }
     let mut cmd = Command::new("git");
-    // Use an explicit wildcard refspec so that repos cloned with --single-branch
-    // (whose .git/config only tracks one branch) still get all remote branches.
-    cmd.args([
-        "fetch", "origin", "--prune",
-        "+refs/heads/*:refs/remotes/origin/*",
-    ]).current_dir(path);
-    if let Some(ref p) = proxy {
-        if p.enabled {
-            if !p.http_proxy.is_empty() {
-                cmd.env("http_proxy", &p.http_proxy);
-                cmd.env("HTTP_PROXY", &p.http_proxy);
-            }
-            if !p.https_proxy.is_empty() {
-                cmd.env("https_proxy", &p.https_proxy);
-                cmd.env("HTTPS_PROXY", &p.https_proxy);
-            }
-            if !p.no_proxy.is_empty() {
-                cmd.env("no_proxy", &p.no_proxy);
-                cmd.env("NO_PROXY", &p.no_proxy);
-            }
-        }
-    }
+    // Explicit wildcard refspec: works even for single-branch clones
+    cmd.args(["fetch", "origin", "--prune", "+refs/heads/*:refs/remotes/origin/*"])
+        .current_dir(path);
+    if let Some(ref p) = proxy { apply_proxy_env(&mut cmd, p); }
     let _ = cmd.output().await;
     branches_from_refs(path).await
 }
@@ -499,15 +516,39 @@ pub async fn checkout_and_pull(
         }
     }
 
-    // 2. Pull — reuse git_pull which handles auth URL embedding + proxy
-    let log: LogFn = Arc::new(|_| {});
-    let repo = crate::models::RepoConfig {
-        local_path,
-        remote_url,
-        branch,
-        auth,
-    };
-    git_pull(&log, &repo, &proxy).await?;
+    // 2. Fetch the specific branch with an explicit refspec.
+    //    Using a targeted refspec (instead of plain "git fetch origin") ensures:
+    //    - single-branch clones that only track one branch still fetch the new branch
+    //    - the auth-URL path fetches exactly the right branch (not just the remote HEAD)
+    let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    let mut fetch_cmd = Command::new("git");
+    if let Some(aurl) = auth_url(&remote_url, &auth) {
+        fetch_cmd.args(["-c", "credential.helper=", "fetch", &aurl, &refspec]);
+    } else {
+        fetch_cmd.args(["fetch", "origin", &refspec]);
+    }
+    fetch_cmd.current_dir(path);
+    apply_proxy_env(&mut fetch_cmd, &proxy);
+    apply_auth_env(&mut fetch_cmd, &auth);
+
+    let fetch_out = fetch_cmd.output().await?;
+    if !fetch_out.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch_out.stderr);
+        return Err(AppError::Git(format!("fetch: {}", stderr.trim())));
+    }
+
+    // 3. Reset working tree to the freshly-fetched remote ref
+    let target = format!("origin/{branch}");
+    let reset_out = Command::new("git")
+        .args(["reset", "--hard", &target])
+        .current_dir(path)
+        .output()
+        .await?;
+    if !reset_out.status.success() {
+        let stderr = String::from_utf8_lossy(&reset_out.stderr);
+        return Err(AppError::Git(format!("reset: {}", stderr.trim())));
+    }
+
     Ok(())
 }
 
