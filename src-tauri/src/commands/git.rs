@@ -285,18 +285,45 @@ pub async fn is_dirty(path: &Path) -> Result<bool> {
 }
 
 /// Discard all staged and unstaged changes in `path`, and remove untracked files.
-/// Equivalent to `git reset --hard HEAD && git clean -fd`.
 pub async fn discard_changes(path: &Path) -> Result<()> {
-    Command::new("git")
-        .args(["reset", "--hard", "HEAD"])
-        .current_dir(path)
-        .output()
-        .await?;
-    Command::new("git")
-        .args(["clean", "-fd"])
-        .current_dir(path)
-        .output()
-        .await?;
+    Command::new("git").args(["restore", "--staged", "."]).current_dir(path).output().await?;
+    Command::new("git").args(["restore", "."]).current_dir(path).output().await?;
+    Command::new("git").args(["clean", "-fd"]).current_dir(path).output().await?;
+    Ok(())
+}
+
+/// Unstage everything, then re-stage only the given paths.
+/// `paths_to_add` should already include old paths for renames so that
+/// the deletion of the old name is staged alongside the new file.
+pub async fn stage_selected(
+    log: &LogFn,
+    path: &Path,
+    paths_to_add: &[String],
+    auth: Option<&AuthConfig>,
+    proxy: Option<&ProxyConfig>,
+) -> Result<()> {
+    // Unstage all
+    run_git(log, path, &["restore", "--staged", "."], None, auth, proxy).await?;
+
+    if paths_to_add.is_empty() {
+        emit_log(log, SyncEvent::info("  No paths to stage."));
+        return Ok(());
+    }
+
+    // Re-stage only selected paths
+    let mut args = vec!["add", "--"];
+    for p in paths_to_add {
+        args.push(p.as_str());
+    }
+    run_git(log, path, &args, None, auth, proxy).await?;
+    Ok(())
+}
+
+/// After commit+push, revert any remaining working-tree changes so that
+/// unselected mirror changes don't linger in Repo A.
+pub async fn revert_remaining(path: &Path) -> Result<()> {
+    Command::new("git").args(["restore", "."]).current_dir(path).output().await?;
+    Command::new("git").args(["clean", "-fd"]).current_dir(path).output().await?;
     Ok(())
 }
 

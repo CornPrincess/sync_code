@@ -4,6 +4,7 @@
   import LogViewer from './lib/components/LogViewer.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import { configStore } from './lib/stores/config.svelte.js';
+  import FileTree from './lib/components/FileTree.svelte';
   import {
     startSync,
     commitAndPush,
@@ -21,6 +22,7 @@
 
   // Review state
   let pendingFiles = $state<FileChange[]>([]);
+  let selectedPaths = $state(new Set<string>());
   let commitMessage = $state('');
 
   onMount(() => {
@@ -53,6 +55,7 @@
         lines = [...lines, event];
       });
       pendingFiles = files;
+      selectedPaths = new Set(files.map((f) => f.path)); // select all by default
       commitMessage = defaultCommitMessage();
       status = 'review';
     } catch (e: unknown) {
@@ -64,13 +67,21 @@
   async function handlePush() {
     errorMessage = undefined;
     status = 'pushing';
+
+    // For renamed files include both new + old path so git stages the deletion too
+    const pathsToStage = [...selectedPaths].flatMap((path) => {
+      const f = pendingFiles.find((x) => x.path === path);
+      return f?.old_path ? [path, f.old_path] : [path];
+    });
+
     try {
-      await commitAndPush(configStore.value, commitMessage, (event) => {
+      await commitAndPush(configStore.value, commitMessage, pathsToStage, (event) => {
         lines = [...lines, event];
       });
       status = 'success';
       lastSync = new Date().toLocaleTimeString();
       pendingFiles = [];
+      selectedPaths = new Set();
     } catch (e: unknown) {
       status = 'error';
       errorMessage = typeof e === 'string' ? e : 'Push failed.';
@@ -78,22 +89,14 @@
   }
 
   async function handleDiscard() {
-    try {
-      await discardSync(configStore.value);
-    } catch {
-      /* best effort */
-    }
+    try { await discardSync(configStore.value); } catch { /* best effort */ }
     pendingFiles = [];
+    selectedPaths = new Set();
     status = 'idle';
   }
 
   function onConfigChange() {
     configStore.save().catch(console.error);
-  }
-
-  // Derived helpers for the review panel
-  function statusIcon(s: string): string {
-    return s === 'added' ? '+' : s === 'deleted' ? '−' : s === 'renamed' ? '→' : s === 'copied' ? '⊕' : '~';
   }
 </script>
 
@@ -192,19 +195,9 @@
 
       {#if pendingFiles.length > 0}
         <div class="review-body">
-          <!-- Left: file list -->
-          <div class="file-list-wrap">
-            <ul class="file-list">
-              {#each pendingFiles as f (f.path)}
-                <li class="file-item file-{f.status}">
-                  <span class="file-icon" aria-label={f.status}>{statusIcon(f.status)}</span>
-                  <span class="file-path">{f.path}</span>
-                  {#if f.old_path}
-                    <span class="file-old">← {f.old_path}</span>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
+          <!-- Left: hierarchical file tree with checkboxes -->
+          <div class="file-tree-wrap">
+            <FileTree files={pendingFiles} bind:selected={selectedPaths} />
           </div>
 
           <!-- Right: commit message + buttons -->
@@ -214,27 +207,24 @@
               <textarea
                 class="commit-msg"
                 bind:value={commitMessage}
-                rows="4"
+                rows="5"
                 placeholder="Describe what changed…"
                 disabled={status === 'pushing'}
               ></textarea>
             </label>
-            <p class="commit-hint">Leave blank to use the default message.</p>
+            <p class="commit-hint">Leave blank to use the default timestamp message.</p>
 
             <div class="commit-actions">
-              <button
-                class="btn-discard"
-                onclick={handleDiscard}
-                disabled={status === 'pushing'}
-              >
+              <button class="btn-discard" onclick={handleDiscard} disabled={status === 'pushing'}>
                 Discard
               </button>
               <button
                 class="btn-push"
                 onclick={handlePush}
-                disabled={status === 'pushing'}
+                disabled={status === 'pushing' || selectedPaths.size === 0}
+                title={selectedPaths.size === 0 ? 'Select at least one file' : ''}
               >
-                {status === 'pushing' ? 'Pushing…' : 'Commit & Push →'}
+                {status === 'pushing' ? 'Pushing…' : `Commit & Push (${selectedPaths.size}) →`}
               </button>
             </div>
           </div>
@@ -469,62 +459,14 @@
     max-height: 340px;
   }
 
-  /* File list — left column */
-  .file-list-wrap {
+  /* File tree — left column */
+  .file-tree-wrap {
     flex: 1 1 0;
-    overflow-y: auto;
+    overflow: hidden;
     border-right: 1px solid var(--border);
-  }
-
-  .file-list {
-    list-style: none;
-    margin: 0;
-    padding: 6px 0;
-  }
-
-  .file-item {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 4px 14px;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    line-height: 1.6;
-    transition: background 0.1s;
+    flex-direction: column;
   }
-
-  .file-item:hover { background: rgba(255,255,255,0.04); }
-
-  .file-icon {
-    font-size: 0.85rem;
-    font-weight: 700;
-    width: 14px;
-    text-align: center;
-    flex-shrink: 0;
-    user-select: none;
-  }
-
-  .file-path { color: var(--text-primary); word-break: break-all; }
-
-  .file-old {
-    color: var(--text-muted);
-    font-size: 0.73rem;
-    flex-shrink: 0;
-  }
-
-  /* Status colours */
-  .file-added   .file-icon { color: var(--color-success); }
-  .file-added   .file-path { color: var(--color-success); }
-  .file-deleted .file-icon { color: var(--color-error); }
-  .file-deleted .file-path { color: var(--color-error); opacity: 0.85; text-decoration: line-through; }
-  .file-modified .file-icon { color: #79c0ff; }
-  .file-modified .file-path { color: #79c0ff; }
-  .file-renamed .file-icon { color: var(--color-warn); }
-  .file-renamed .file-path { color: var(--color-warn); }
-  .file-copied  .file-icon { color: #a371f7; }
-  .file-copied  .file-path { color: #a371f7; }
-  .file-unknown .file-icon { color: var(--text-muted); }
-  .file-unknown .file-path { color: var(--text-muted); }
 
   /* Commit pane — right column */
   .commit-pane {

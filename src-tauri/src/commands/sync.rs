@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 
 use crate::commands::git::{
     discard_changes, emit_log, get_staged_files, git_add_all, git_commit, git_pull,
-    git_push_only, is_dirty, validate_repo, LogFn,
+    git_push_only, is_dirty, revert_remaining, stage_selected, validate_repo, LogFn,
 };
 use crate::error::{AppError, Result};
 use crate::models::{AppConfig, FileChange, SyncEvent};
@@ -208,13 +208,17 @@ async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>> {
 }
 
 // ---------------------------------------------------------------------------
-// commit_and_push — user-triggered after reviewing changes
+// commit_and_push — user-triggered after selecting files in the review panel
 // ---------------------------------------------------------------------------
 
+/// `paths_to_stage`: flat list of file paths to commit.
+/// For renamed files the caller must include BOTH the new path and the old path
+/// so that the deletion of the old name is staged alongside the new file.
 #[tauri::command]
 pub async fn commit_and_push(
     config: AppConfig,
     commit_message: String,
+    paths_to_stage: Vec<String>,
     on_event: Channel<SyncEvent>,
 ) -> Result<()> {
     let log: LogFn = Arc::new(move |event: SyncEvent| {
@@ -223,11 +227,30 @@ pub async fn commit_and_push(
     let path_a = PathBuf::from(&config.repo_a.local_path);
     let proxy = &config.proxy;
 
-    emit_log(&log, SyncEvent::info("━━ Committing ━━"));
-    git_commit(&log, &path_a, &commit_message, Some(&config.repo_a.auth), Some(proxy)).await?;
+    if paths_to_stage.is_empty() {
+        return Err(AppError::Validation("No files selected to commit.".into()));
+    }
 
+    // 1. Unstage all, then re-stage only the selected paths
+    emit_log(&log, SyncEvent::info("━━ Staging selected files ━━"));
+    stage_selected(&log, &path_a, &paths_to_stage, Some(&config.repo_a.auth), Some(proxy)).await?;
+
+    // 2. Commit (skips automatically if nothing is staged)
+    emit_log(&log, SyncEvent::info("━━ Committing ━━"));
+    let msg = if commit_message.trim().is_empty() {
+        format!("sync: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
+    } else {
+        commit_message
+    };
+    git_commit(&log, &path_a, &msg, Some(&config.repo_a.auth), Some(proxy)).await?;
+
+    // 3. Push
     emit_log(&log, SyncEvent::info("━━ Pushing Repo A ━━"));
     git_push_only(&log, &config.repo_a, proxy).await?;
+
+    // 4. Revert any remaining (unselected) working-tree changes
+    emit_log(&log, SyncEvent::info("Reverting unselected changes in Repo A…"));
+    revert_remaining(&path_a).await?;
 
     emit_log(&log, SyncEvent::success("Push completed successfully!"));
     Ok(())

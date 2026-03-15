@@ -86,15 +86,20 @@ export async function startSync(
   return invoke<FileChange[]>('start_sync', { config, onEvent: channel });
 }
 
-/** Commit staged changes and push Repo A. */
+/**
+ * Commit only the selected files and push Repo A.
+ * `pathsToStage`: list of file paths to `git add`. For renamed files,
+ * include both the new path and the old path so the deletion is staged too.
+ */
 export async function commitAndPush(
   config: AppConfig,
   commitMessage: string,
+  pathsToStage: string[],
   onEvent: (event: SyncEvent) => void,
 ): Promise<void> {
   const channel = new Channel<SyncEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>('commit_and_push', { config, commitMessage, onEvent: channel });
+  return invoke<void>('commit_and_push', { config, commitMessage, pathsToStage, onEvent: channel });
 }
 
 /** Discard all staged / unstaged changes in Repo A (undoes the mirror). */
