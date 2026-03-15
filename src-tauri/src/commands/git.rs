@@ -369,10 +369,6 @@ pub async fn list_branches(local_path: String) -> BranchList {
     remote.sort();
     remote.dedup();
 
-    // Exclude from remote any branch that already exists locally
-    let local_set: std::collections::HashSet<_> = local.iter().cloned().collect();
-    remote.retain(|b| !local_set.contains(b));
-
     BranchList { local, remote }
 }
 
@@ -391,6 +387,7 @@ async fn branch_list(path: &std::path::Path, args: &[&str]) -> Vec<String> {
 }
 
 /// Checkout the given branch in the repo at `local_path`.
+/// If the branch exists only on the remote, creates a local tracking branch automatically.
 #[tauri::command]
 pub async fn checkout_branch(local_path: String, branch: String) -> Result<()> {
     let path = std::path::Path::new(&local_path);
@@ -400,16 +397,27 @@ pub async fn checkout_branch(local_path: String, branch: String) -> Result<()> {
     if branch.is_empty() {
         return Err(AppError::Validation("Branch name is empty".into()));
     }
+    // First try a plain checkout (works for local branches and remote branches that
+    // git can auto-track).
     let out = Command::new("git")
         .args(["checkout", &branch])
         .current_dir(path)
         .output()
         .await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(AppError::Git(stderr.trim().to_string()));
+    if out.status.success() {
+        return Ok(());
     }
-    Ok(())
+    // If that failed, try creating a local tracking branch from origin/<branch>.
+    let out2 = Command::new("git")
+        .args(["checkout", "--track", &format!("origin/{branch}")])
+        .current_dir(path)
+        .output()
+        .await?;
+    if out2.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out2.stderr);
+    Err(AppError::Git(stderr.trim().to_string()))
 }
 
 // ---------------------------------------------------------------------------
