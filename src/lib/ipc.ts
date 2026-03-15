@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke, Channel } from '@tauri-apps/api/core';
 
 export interface AuthConfig {
   /** "none" | "userpass" | "token" | "ssh" */
@@ -65,10 +64,16 @@ export async function saveConfig(config: AppConfig): Promise<void> {
   return invoke<void>('save_config', { config });
 }
 
-export async function startSync(config: AppConfig): Promise<void> {
-  return invoke<void>('start_sync', { config });
-}
-
-export function onSyncLog(handler: (event: SyncEvent) => void): Promise<UnlistenFn> {
-  return listen<SyncEvent>('sync://log', (e) => handler(e.payload));
+/**
+ * Start the sync and stream log events via a Tauri v2 Channel.
+ * The Channel shares the same IPC pipe as invoke responses, so events
+ * are guaranteed to arrive while the command runs (no race with emit/listen).
+ */
+export async function startSync(
+  config: AppConfig,
+  onEvent: (event: SyncEvent) => void,
+): Promise<void> {
+  const channel = new Channel<SyncEvent>();
+  channel.onmessage = onEvent;
+  return invoke<void>('start_sync', { config, onEvent: channel });
 }

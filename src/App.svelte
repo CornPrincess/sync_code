@@ -4,13 +4,14 @@
   import LogViewer from './lib/components/LogViewer.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import { configStore } from './lib/stores/config.svelte.js';
-  import { startSync } from './lib/ipc.js';
+  import { startSync, type SyncEvent } from './lib/ipc.js';
 
   type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
 
   let status = $state<SyncStatus>('idle');
   let lastSync = $state<string | undefined>(undefined);
   let errorMessage = $state<string | undefined>(undefined);
+  let lines = $state<SyncEvent[]>([]);
 
   onMount(() => {
     configStore.load();
@@ -34,9 +35,12 @@
       return;
     }
 
+    lines = [];
     status = 'syncing';
     try {
-      await startSync(configStore.value);
+      await startSync(configStore.value, (event) => {
+        lines = [...lines, event];
+      });
       status = 'success';
       lastSync = new Date().toLocaleTimeString();
     } catch (e: unknown) {
@@ -56,80 +60,79 @@
     <p class="app-subtitle">Sync code from Repo B into Repo A, then push.</p>
   </header>
 
-  <!-- Repo configuration + proxy (scrollable block so expanding auth never pushes Sync Now off screen) -->
+  <!-- Repo configuration + proxy -->
   <div class="config-area">
-  <section class="repo-grid">
-    <RepoPanel
-      label="Repo A (target)"
-      bind:config={configStore.value.repo_a}
-      onchange={onConfigChange}
-    />
-    <div class="arrow" aria-hidden="true">←</div>
-    <RepoPanel
-      label="Repo B (source)"
-      bind:config={configStore.value.repo_b}
-      onchange={onConfigChange}
-    />
-  </section>
+    <section class="repo-grid">
+      <RepoPanel
+        label="Repo A (target)"
+        bind:config={configStore.value.repo_a}
+        onchange={onConfigChange}
+      />
+      <div class="arrow" aria-hidden="true">←</div>
+      <RepoPanel
+        label="Repo B (source)"
+        bind:config={configStore.value.repo_b}
+        onchange={onConfigChange}
+      />
+    </section>
 
-  <!-- Network proxy settings -->
-  <section class="proxy-section">
-    <details class="proxy-details">
-      <summary class="proxy-summary">
-        Network Proxy
-        {#if configStore.value.proxy.enabled}
-          <span class="proxy-badge">Enabled</span>
-        {/if}
-      </summary>
-      <div class="proxy-body">
-        <label class="checkbox-option">
-          <input
-            type="checkbox"
-            bind:checked={configStore.value.proxy.enabled}
-            onchange={onConfigChange}
-          />
-          <span>Enable proxy for all git operations</span>
-        </label>
+    <!-- Network proxy settings -->
+    <section class="proxy-section">
+      <details class="proxy-details">
+        <summary class="proxy-summary">
+          Network Proxy
+          {#if configStore.value.proxy.enabled}
+            <span class="proxy-badge">Enabled</span>
+          {/if}
+        </summary>
+        <div class="proxy-body">
+          <label class="checkbox-option">
+            <input
+              type="checkbox"
+              bind:checked={configStore.value.proxy.enabled}
+              onchange={onConfigChange}
+            />
+            <span>Enable proxy for all git operations</span>
+          </label>
 
-        {#if configStore.value.proxy.enabled}
-          <div class="proxy-fields">
-            <label class="field">
-              <span class="field-label">HTTP Proxy</span>
-              <input
-                type="text"
-                bind:value={configStore.value.proxy.http_proxy}
-                onchange={onConfigChange}
-                placeholder="http://proxy.example.com:8080"
-                class="input"
-              />
-            </label>
-            <label class="field">
-              <span class="field-label">HTTPS Proxy</span>
-              <input
-                type="text"
-                bind:value={configStore.value.proxy.https_proxy}
-                onchange={onConfigChange}
-                placeholder="http://proxy.example.com:8080"
-                class="input"
-              />
-            </label>
-            <label class="field">
-              <span class="field-label">No Proxy (comma-separated hosts)</span>
-              <input
-                type="text"
-                bind:value={configStore.value.proxy.no_proxy}
-                onchange={onConfigChange}
-                placeholder="localhost,127.0.0.1,.internal.example.com"
-                class="input"
-              />
-            </label>
-          </div>
-        {/if}
-      </div>
-    </details>
-  </section>
-
-  </div><!-- /config-area -->
+          {#if configStore.value.proxy.enabled}
+            <div class="proxy-fields">
+              <label class="field">
+                <span class="field-label">HTTP Proxy</span>
+                <input
+                  type="text"
+                  bind:value={configStore.value.proxy.http_proxy}
+                  onchange={onConfigChange}
+                  placeholder="http://proxy.example.com:8080"
+                  class="input"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">HTTPS Proxy</span>
+                <input
+                  type="text"
+                  bind:value={configStore.value.proxy.https_proxy}
+                  onchange={onConfigChange}
+                  placeholder="http://proxy.example.com:8080"
+                  class="input"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">No Proxy (comma-separated hosts)</span>
+                <input
+                  type="text"
+                  bind:value={configStore.value.proxy.no_proxy}
+                  onchange={onConfigChange}
+                  placeholder="localhost,127.0.0.1,.internal.example.com"
+                  class="input"
+                />
+              </label>
+            </div>
+          {/if}
+        </div>
+      </details>
+    </section>
+  </div>
 
   <!-- Actions -->
   <section class="actions">
@@ -150,7 +153,7 @@
 
   <!-- Log output -->
   <section class="log-section">
-    <LogViewer />
+    <LogViewer bind:lines />
   </section>
 </main>
 
@@ -160,9 +163,8 @@
     flex-direction: column;
     gap: 16px;
     padding: 24px;
-    height: 100vh;
+    min-height: 100vh;
     box-sizing: border-box;
-    overflow: hidden;
   }
 
   .app-header {
@@ -182,11 +184,17 @@
     color: var(--text-muted);
   }
 
+  /* Config area: natural height, no overflow clipping */
+  .config-area {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
   .repo-grid {
     display: flex;
     gap: 12px;
     align-items: flex-start;
-    flex-shrink: 0;
   }
 
   .arrow {
@@ -196,21 +204,7 @@
     flex-shrink: 0;
   }
 
-  /* Config area: scrollable so expanding auth panels never push Sync Now off screen */
-  .config-area {
-    flex: 0 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
   /* Proxy section */
-  .proxy-section {
-    flex-shrink: 0;
-  }
-
   .proxy-details {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -364,10 +358,9 @@
     cursor: not-allowed;
   }
 
-  /* Log */
+  /* Log: fixed height with internal scroll */
   .log-section {
-    flex: 1;
-    min-height: 0;
+    height: 380px;
     display: flex;
     flex-direction: column;
   }

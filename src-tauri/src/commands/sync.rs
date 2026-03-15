@@ -3,16 +3,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
+use tauri::ipc::Channel;
 use walkdir::WalkDir;
 
-use crate::commands::git::{emit_log, git_pull, git_push, is_dirty, validate_repo};
+use crate::commands::git::{emit_log, git_pull, git_push, is_dirty, validate_repo, LogFn};
 use crate::error::{AppError, Result};
 use crate::models::{AppConfig, SyncEvent};
 
 /// Mirror the contents of `src` into `dst`, excluding the `.git` directory.
-/// Files present in `dst` but not in `src` are deleted for an exact mirror.
-fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
-    emit_log(app, SyncEvent::info(format!("Scanning Repo B: {}", src.display())));
+fn mirror_files(log: &LogFn, src: &Path, dst: &Path) -> Result<()> {
+    emit_log(log, SyncEvent::info(format!("Scanning Repo B: {}", src.display())));
 
     // Collect all relative file paths from src (excluding .git)
     let mut src_files: HashSet<PathBuf> = HashSet::new();
@@ -32,7 +32,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
     }
 
     emit_log(
-        app,
+        log,
         SyncEvent::info(format!(
             "Found {} file(s) in Repo B — mirroring into Repo A…",
             src_files.len()
@@ -55,7 +55,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
             _ => true,
         };
         if needs_copy {
-            emit_log(app, SyncEvent::info(format!("  copy  {}", rel.display())));
+            emit_log(log, SyncEvent::info(format!("  copy  {}", rel.display())));
             fs::copy(&src_file, &dst_file)?;
             copied += 1;
         } else {
@@ -63,7 +63,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
         }
     }
     emit_log(
-        app,
+        log,
         SyncEvent::info(format!(
             "Copy complete: {copied} updated, {skipped} unchanged."
         )),
@@ -84,14 +84,14 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
             continue;
         }
         if !src_files.contains(rel) {
-            emit_log(app, SyncEvent::info(format!("  delete {}", rel.display())));
+            emit_log(log, SyncEvent::info(format!("  delete {}", rel.display())));
             fs::remove_file(entry.path())?;
             deleted += 1;
         }
     }
     if deleted > 0 {
         emit_log(
-            app,
+            log,
             SyncEvent::info(format!("Removed {deleted} stale file(s) from Repo A.")),
         );
     }
@@ -120,7 +120,7 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
     }
     if pruned_dirs > 0 {
         emit_log(
-            app,
+            log,
             SyncEvent::info(format!("Pruned {pruned_dirs} empty director(ies) from Repo A.")),
         );
     }
@@ -130,9 +130,10 @@ fn mirror_files(app: &AppHandle, src: &Path, dst: &Path) -> Result<()> {
 
 #[tauri::command]
 pub async fn start_sync(
-    app: AppHandle,
+    _app: AppHandle,
     config: AppConfig,
     sync_lock: tauri::State<'_, Arc<Mutex<bool>>>,
+    on_event: Channel<SyncEvent>,
 ) -> Result<()> {
     // Acquire sync lock — prevent concurrent runs
     {
@@ -143,7 +144,12 @@ pub async fn start_sync(
         *locked = true;
     }
 
-    let result = do_sync(&app, &config).await;
+    // Build a LogFn backed by the Channel — guaranteed delivery through IPC
+    let log: LogFn = Arc::new(move |event: SyncEvent| {
+        let _ = on_event.send(event);
+    });
+
+    let result = do_sync(&log, &config).await;
 
     {
         let mut locked = sync_lock.lock().map_err(|_| AppError::SyncInProgress)?;
@@ -153,57 +159,57 @@ pub async fn start_sync(
     result
 }
 
-async fn do_sync(app: &AppHandle, config: &AppConfig) -> Result<()> {
+async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<()> {
     let path_a = PathBuf::from(&config.repo_a.local_path);
     let path_b = PathBuf::from(&config.repo_b.local_path);
     let proxy = &config.proxy;
 
     // ── Step 1: Validate repos ──────────────────────────────────────────────
-    emit_log(app, SyncEvent::info("━━ Step 1/5 — Validating repositories ━━"));
-    validate_repo(app, &path_a).await?;
-    validate_repo(app, &path_b).await?;
+    emit_log(log, SyncEvent::info("━━ Step 1/5 — Validating repositories ━━"));
+    validate_repo(log, &path_a).await?;
+    validate_repo(log, &path_b).await?;
 
     // ── Step 2: Abort if Repo A is dirty ───────────────────────────────────
-    emit_log(app, SyncEvent::info("━━ Step 2/5 — Checking Repo A working tree ━━"));
+    emit_log(log, SyncEvent::info("━━ Step 2/5 — Checking Repo A working tree ━━"));
     if is_dirty(&path_a).await? {
         return Err(AppError::Validation(
             "Repo A has uncommitted changes. Please commit or discard them before syncing."
                 .to_string(),
         ));
     }
-    emit_log(app, SyncEvent::info("  Repo A working tree is clean."));
+    emit_log(log, SyncEvent::info("  Repo A working tree is clean."));
 
     // ── Step 3: Pull Repo B ─────────────────────────────────────────────────
     emit_log(
-        app,
+        log,
         SyncEvent::info(format!(
             "━━ Step 3/5 — Pulling Repo B ({}@{}) ━━",
             config.repo_b.local_path, config.repo_b.branch
         )),
     );
-    git_pull(app, &config.repo_b, proxy).await?;
+    git_pull(log, &config.repo_b, proxy).await?;
 
     // ── Step 4: Mirror files (CPU/IO-bound — run on blocking thread) ────────
-    emit_log(app, SyncEvent::info("━━ Step 4/5 — Mirroring Repo B → Repo A ━━"));
-    let app_clone = app.clone();
+    emit_log(log, SyncEvent::info("━━ Step 4/5 — Mirroring Repo B → Repo A ━━"));
+    let log_clone = Arc::clone(log);
     let path_b_clone = path_b.clone();
     let path_a_clone = path_a.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        mirror_files(&app_clone, &path_b_clone, &path_a_clone)
+        mirror_files(&log_clone, &path_b_clone, &path_a_clone)
     })
     .await
     .map_err(|e| AppError::Git(e.to_string()))??;
 
     // ── Step 5: Push Repo A ─────────────────────────────────────────────────
     emit_log(
-        app,
+        log,
         SyncEvent::info(format!(
             "━━ Step 5/5 — Pushing Repo A ({}@{}) ━━",
             config.repo_a.local_path, config.repo_a.branch
         )),
     );
-    git_push(app, &config.repo_a, proxy).await?;
+    git_push(log, &config.repo_a, proxy).await?;
 
-    emit_log(app, SyncEvent::success("Sync completed successfully!"));
+    emit_log(log, SyncEvent::success("Sync completed successfully!"));
     Ok(())
 }

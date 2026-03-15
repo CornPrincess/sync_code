@@ -1,13 +1,18 @@
 use std::path::Path;
-use tauri::{AppHandle, Emitter};
+use std::sync::Arc;
 use tokio::process::Command;
 
 use crate::error::{AppError, Result};
 use crate::models::{AuthConfig, ProxyConfig, RepoConfig, SyncEvent};
 
-/// Emit a log event to the frontend.
-pub fn emit_log(app: &AppHandle, event: SyncEvent) {
-    let _ = app.emit("sync://log", event);
+/// Shared logger type: cheaply clone-able and safe to send across threads.
+/// Created in `start_sync` from a `Channel<SyncEvent>`, then passed down into
+/// every git helper so they can stream progress back to the frontend.
+pub type LogFn = Arc<dyn Fn(SyncEvent) + Send + Sync>;
+
+/// Call the logger with a sync event.
+pub fn emit_log(log: &LogFn, event: SyncEvent) {
+    log(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -18,8 +23,6 @@ pub fn emit_log(app: &AppHandle, event: SyncEvent) {
 ///
 /// - `userpass`: `https://username:password@host/repo.git`
 /// - `token`:    `https://oauth2:token@host/repo.git`
-///   Using `oauth2` as the username prefix is widely supported:
-///   GitLab, Gitea, Codeup, GitHub, Bitbucket all accept it.
 ///
 /// Returns None when auth is not applicable (SSH, none, or missing fields).
 fn auth_url(remote_url: &str, auth: &AuthConfig) -> Option<String> {
@@ -77,7 +80,7 @@ fn ssh_command(auth: &AuthConfig) -> Option<String> {
 ///   (use it to hide embedded credentials).
 /// * Each non-empty output line is emitted as an info log event.
 async fn run_git(
-    app: &AppHandle,
+    log: &LogFn,
     dir: &Path,
     args: &[&str],
     display: Option<&str>,
@@ -86,15 +89,12 @@ async fn run_git(
 ) -> Result<String> {
     let joined = args.join(" ");
     let logged = display.unwrap_or(&joined);
-    emit_log(app, SyncEvent::info(format!("$ git {logged}")));
+    emit_log(log, SyncEvent::info(format!("$ git {logged}")));
 
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(dir);
 
     // Disable terminal prompts only when we are actually supplying credentials.
-    // The parent process (npm / tauri-cli) may have already set
-    // GIT_TERMINAL_PROMPT=0, so explicitly remove it when we want the system
-    // credential helper (osxkeychain, git-credential-manager, …) to work.
     if let Some(auth) = auth {
         let disabling_prompts = match auth.auth_type.as_str() {
             "userpass" => !auth.username.is_empty(),
@@ -139,7 +139,7 @@ async fn run_git(
     for line in stdout.lines().chain(stderr.lines()) {
         let t = line.trim();
         if !t.is_empty() {
-            emit_log(app, SyncEvent::info(format!("  {t}")));
+            emit_log(log, SyncEvent::info(format!("  {t}")));
         }
     }
 
@@ -156,8 +156,8 @@ async fn run_git(
 // ---------------------------------------------------------------------------
 
 /// Verify that `path` exists and contains a `.git` directory.
-pub async fn validate_repo(app: &AppHandle, path: &Path) -> Result<()> {
-    emit_log(app, SyncEvent::info(format!("Checking {}", path.display())));
+pub async fn validate_repo(log: &LogFn, path: &Path) -> Result<()> {
+    emit_log(log, SyncEvent::info(format!("Checking {}", path.display())));
     if !path.exists() {
         return Err(AppError::Validation(format!(
             "Path does not exist: {}",
@@ -170,46 +170,38 @@ pub async fn validate_repo(app: &AppHandle, path: &Path) -> Result<()> {
             path.display()
         )));
     }
-    emit_log(app, SyncEvent::info(format!("  OK — git repo found at {}", path.display())));
+    emit_log(log, SyncEvent::info(format!("  OK — git repo found at {}", path.display())));
     Ok(())
 }
 
 /// Fetch + hard-reset to `origin/<branch>`.
-///
-/// When HTTP userpass auth is configured the remote URL is temporarily
-/// overridden via `-c remote.origin.url=<auth_url>` so credentials are
-/// never written to disk.
-pub async fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
+pub async fn git_pull(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
     let path = Path::new(&repo.local_path);
     let branch = &repo.branch;
 
     emit_log(
-        app,
+        log,
         SyncEvent::info(format!(
             "Fetching from remote (branch: {branch}, auth: {})…",
             repo.auth.auth_type
         )),
     );
 
-    // Pass the authenticated URL directly to `git fetch` — this is the most
-    // reliable cross-platform approach and avoids the credential helper entirely.
-    // After `git fetch <url>` the fetched HEAD is in FETCH_HEAD.
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
         run_git(
-            app,
+            log,
             path,
             &["-c", "credential.helper=", "fetch", "--progress", &aurl],
-            Some(&format!("fetch --progress <authenticated-url>  (auth: userpass)")),
+            Some(&format!("fetch --progress <authenticated-url>  (auth: {})", repo.auth.auth_type)),
             Some(&repo.auth),
             Some(proxy),
         )
         .await?;
-        // Use FETCH_HEAD because we fetched a URL, not a named remote
-        run_git(app, path, &["reset", "--hard", "FETCH_HEAD"], None, Some(&repo.auth), Some(proxy))
+        run_git(log, path, &["reset", "--hard", "FETCH_HEAD"], None, Some(&repo.auth), Some(proxy))
             .await?;
     } else {
         run_git(
-            app,
+            log,
             path,
             &["fetch", "--progress", "origin"],
             None,
@@ -218,19 +210,19 @@ pub async fn git_pull(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -
         )
         .await?;
         let target = format!("origin/{branch}");
-        run_git(app, path, &["reset", "--hard", &target], None, Some(&repo.auth), Some(proxy))
+        run_git(log, path, &["reset", "--hard", &target], None, Some(&repo.auth), Some(proxy))
             .await?;
-        emit_log(app, SyncEvent::info(format!("  Repo reset to {target}")));
+        emit_log(log, SyncEvent::info(format!("  Repo reset to {target}")));
     }
     Ok(())
 }
 
 /// Stage everything, commit (if dirty), and push to `origin/<branch>`.
-pub async fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
+pub async fn git_push(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
     let path = Path::new(&repo.local_path);
     let branch = &repo.branch;
 
-    run_git(app, path, &["add", "-A"], None, Some(&repo.auth), Some(proxy)).await?;
+    run_git(log, path, &["add", "-A"], None, Some(&repo.auth), Some(proxy)).await?;
 
     // Check if there is anything to commit (async)
     let status_out = Command::new("git")
@@ -243,9 +235,9 @@ pub async fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -
     if dirty {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let msg = format!("sync: {ts}");
-        emit_log(app, SyncEvent::info(format!("Committing with message: \"{msg}\"")));
+        emit_log(log, SyncEvent::info(format!("Committing with message: \"{msg}\"")));
         run_git(
-            app,
+            log,
             path,
             &["commit", "-m", &msg],
             None,
@@ -254,31 +246,30 @@ pub async fn git_push(app: &AppHandle, repo: &RepoConfig, proxy: &ProxyConfig) -
         )
         .await?;
     } else {
-        emit_log(app, SyncEvent::info("Working tree is clean — nothing to commit."));
+        emit_log(log, SyncEvent::info("Working tree is clean — nothing to commit."));
     }
 
     emit_log(
-        app,
+        log,
         SyncEvent::info(format!(
             "Pushing to remote (branch: {branch}, auth: {})…",
             repo.auth.auth_type
         )),
     );
 
-    // Pass the authenticated URL directly to `git push` — same rationale as fetch.
     if let Some(aurl) = auth_url(&repo.remote_url, &repo.auth) {
         run_git(
-            app,
+            log,
             path,
             &["-c", "credential.helper=", "push", "--progress", &aurl, branch],
-            Some(&format!("push --progress <authenticated-url> {branch}  (auth: userpass)")),
+            Some(&format!("push --progress <authenticated-url> {branch}  (auth: {})", repo.auth.auth_type)),
             Some(&repo.auth),
             Some(proxy),
         )
         .await?;
     } else {
         run_git(
-            app,
+            log,
             path,
             &["push", "--progress", "origin", branch],
             None,
