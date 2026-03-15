@@ -1,6 +1,6 @@
 [package]
 name = "sync-code"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.77"
 
@@ -12,18 +12,31 @@ crate-type = ["lib", "cdylib"]
 name = "sync-code"
 path = "src/main.rs"
 
+[[bin]]
+name = "web-server"
+path = "src/bin/web_server.rs"
+required-features = ["web"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tokio = { version = "1", features = ["process"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
+
+# Web server (enabled via --features web)
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
+
+[features]
+web = ["dep:axum", "dep:tower-http", "dep:tokio-stream"]
 
 [profile.release]
 codegen-units = 1

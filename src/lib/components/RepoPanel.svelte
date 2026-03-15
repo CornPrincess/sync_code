@@ -1,6 +1,8 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { listBranches, refreshBranches, checkoutAndPull, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
+  import { isTauri, listBranches, refreshBranches, checkoutAndPull, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
+
+  const isTauriCtx = isTauri();
 
   let {
     label,
@@ -173,7 +175,7 @@
         placeholder="/home/user/my-repo"
         class="input"
       />
-      <button type="button" class="btn-browse" onclick={browseFolder}>Browse</button>
+      {#if isTauriCtx}<button type="button" class="btn-browse" onclick={browseFolder}>Browse</button>{/if}
     </div>
   </label>
 
@@ -442,7 +444,7 @@
           <div class="path-row">
             <input type="text" bind:value={config.auth.ssh_key_path} onchange={onchange}
               placeholder="~/.ssh/id_ed25519" class="input" />
-            <button type="button" class="btn-browse" onclick={browseSSHKey}>Browse</button>
+            {#if isTauriCtx}<button type="button" class="btn-browse" onclick={browseSSHKey}>Browse</button>{/if}
           </div>
         </label>
         <p class="auth-note">Uses GIT_SSH_COMMAND with StrictHostKeyChecking=accept-new.</p>

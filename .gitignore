@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# dist/ is intentionally committed — the web-server binary serves it directly
+# so Windows users don't need to install npm. Rebuild with `npm run build`.
 src-tauri/target/
 .env
 *.local
