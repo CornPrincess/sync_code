@@ -106,3 +106,11 @@ export async function commitAndPush(
 export async function discardSync(config: AppConfig): Promise<void> {
   return invoke<void>('discard_sync', { config });
 }
+
+/**
+ * List all local + remote branch names for the given repo path.
+ * Returns [] if the path is empty, doesn't exist, or isn't a git repo.
+ */
+export async function listBranches(localPath: string): Promise<string[]> {
+  return invoke<string[]>('list_branches', { localPath });
+}

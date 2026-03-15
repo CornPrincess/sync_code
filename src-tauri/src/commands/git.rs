@@ -328,6 +328,49 @@ pub async fn revert_remaining(path: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
+
+/// Return all local and remote branch names for a given repo path.
+/// Returns an empty list (no error) if the path doesn't exist or isn't a git repo.
+#[tauri::command]
+pub async fn list_branches(local_path: String) -> Vec<String> {
+    let path = std::path::Path::new(&local_path);
+    if local_path.is_empty() || !path.exists() {
+        return vec![];
+    }
+    let Ok(out) = Command::new("git")
+        .args(["branch", "-a", "--format=%(refname:short)"])
+        .current_dir(path)
+        .output()
+        .await
+    else {
+        return vec![];
+    };
+    if !out.status.success() {
+        return vec![];
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut branches: Vec<String> = stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        // Strip "origin/" prefix from remote tracking refs so they read like local branches
+        .map(|b| {
+            if let Some(stripped) = b.strip_prefix("origin/") {
+                stripped.to_string()
+            } else {
+                b
+            }
+        })
+        // Skip the HEAD ref
+        .filter(|b| b != "HEAD" && !b.is_empty())
+        .collect();
+    branches.sort();
+    branches.dedup();
+    branches
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

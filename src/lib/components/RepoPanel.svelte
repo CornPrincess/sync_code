@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import type { RepoConfig } from '../ipc.js';
+  import { listBranches, type RepoConfig } from '../ipc.js';
 
   let {
     label,
@@ -11,6 +11,27 @@
     config: RepoConfig;
     onchange?: () => void;
   } = $props();
+
+  // Unique datalist id per panel instance
+  const listId = $derived(`branches-${label.replace(/\s+/g, '-').toLowerCase()}`);
+
+  let branches = $state<string[]>([]);
+  let loadingBranches = $state(false);
+
+  async function fetchBranches(path: string) {
+    if (!path) { branches = []; return; }
+    loadingBranches = true;
+    try {
+      branches = await listBranches(path);
+    } catch {
+      branches = [];
+    } finally {
+      loadingBranches = false;
+    }
+  }
+
+  // Refresh branch list whenever local_path changes
+  $effect(() => { fetchBranches(config.local_path); });
 
   async function browseFolder() {
     const selected = await open({ directory: true, multiple: false });
@@ -59,14 +80,28 @@
   </label>
 
   <label class="field">
-    <span class="field-label">Branch</span>
+    <span class="field-label">
+      Branch
+      {#if loadingBranches}
+        <span class="branch-loading">…</span>
+      {:else if branches.length > 0}
+        <span class="branch-count">{branches.length}</span>
+      {/if}
+    </span>
     <input
       type="text"
       bind:value={config.branch}
       onchange={onchange}
       placeholder="main"
+      list={listId}
       class="input branch-input"
+      autocomplete="off"
     />
+    <datalist id={listId}>
+      {#each branches as b}
+        <option value={b}></option>
+      {/each}
+    </datalist>
   </label>
 
   <!-- Authentication section -->
@@ -219,7 +254,28 @@
   }
 
   .branch-input {
-    max-width: 200px;
+    max-width: 240px;
+  }
+
+  .branch-loading {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 400;
+    font-style: italic;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .branch-count {
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--btn-secondary-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0 5px;
+    letter-spacing: 0;
+    text-transform: none;
   }
 
   .btn-browse {

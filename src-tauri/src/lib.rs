@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use commands::{
     config::{load_config, save_config},
+    git::list_branches,
     sync::{commit_and_push, discard_sync, start_sync},
 };
 
@@ -17,6 +18,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
+            list_branches,
             start_sync,
             commit_and_push,
             discard_sync,
