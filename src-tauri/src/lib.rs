@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use commands::{
     config::{load_config, save_config},
-    git::{checkout_branch, list_branches, refresh_branches},
+    git::{checkout_and_pull, checkout_branch, list_branches, refresh_branches},
     sync::{commit_and_push, discard_sync, start_sync},
 };
 
@@ -21,6 +21,7 @@ pub fn run() {
             list_branches,
             refresh_branches,
             checkout_branch,
+            checkout_and_pull,
             start_sync,
             commit_and_push,
             discard_sync,

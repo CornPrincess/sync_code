@@ -463,9 +463,53 @@ pub async fn checkout_branch(local_path: String, branch: String) -> Result<()> {
     Err(AppError::Git(stderr.trim().to_string()))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/// Checkout a branch then pull latest code (fetch + reset to origin/<branch>).
+/// Accepts auth and proxy so credentials work the same as the main sync flow.
+#[tauri::command]
+pub async fn checkout_and_pull(
+    local_path: String,
+    branch: String,
+    remote_url: String,
+    auth: crate::models::AuthConfig,
+    proxy: crate::models::ProxyConfig,
+) -> Result<()> {
+    let path = Path::new(&local_path);
+    if local_path.is_empty() || !path.exists() {
+        return Err(AppError::Validation("Local path does not exist".into()));
+    }
+    if branch.is_empty() {
+        return Err(AppError::Validation("Branch name is empty".into()));
+    }
+
+    // 1. Checkout (create local tracking branch if needed)
+    let co = Command::new("git")
+        .args(["checkout", &branch])
+        .current_dir(path)
+        .output()
+        .await?;
+    if !co.status.success() {
+        let co2 = Command::new("git")
+            .args(["checkout", "--track", &format!("origin/{branch}")])
+            .current_dir(path)
+            .output()
+            .await?;
+        if !co2.status.success() {
+            let stderr = String::from_utf8_lossy(&co2.stderr);
+            return Err(AppError::Git(stderr.trim().to_string()));
+        }
+    }
+
+    // 2. Pull — reuse git_pull which handles auth URL embedding + proxy
+    let log: LogFn = Arc::new(|_| {});
+    let repo = crate::models::RepoConfig {
+        local_path,
+        remote_url,
+        branch,
+        auth,
+    };
+    git_pull(&log, &repo, &proxy).await?;
+    Ok(())
+}
 
 /// Parse `git diff --cached --name-status` output into `FileChange` objects.
 fn parse_name_status(output: &str) -> Vec<FileChange> {

@@ -132,3 +132,17 @@ export async function refreshBranches(localPath: string, proxy: ProxyConfig): Pr
 export async function checkoutBranch(localPath: string, branch: string): Promise<void> {
   return invoke<void>('checkout_branch', { localPath, branch });
 }
+
+/**
+ * Checkout a branch then pull latest code (fetch + reset to origin/<branch>).
+ * Passes auth and proxy so credentials match the main sync flow.
+ */
+export async function checkoutAndPull(
+  localPath: string,
+  branch: string,
+  remoteUrl: string,
+  auth: AuthConfig,
+  proxy: ProxyConfig,
+): Promise<void> {
+  return invoke<void>('checkout_and_pull', { localPath, branch, remoteUrl, auth, proxy });
+}

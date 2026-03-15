@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { listBranches, refreshBranches, checkoutBranch, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
+  import { listBranches, refreshBranches, checkoutAndPull, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
 
   let {
     label,
@@ -23,8 +23,11 @@
   let dropdownOpen = $state(false);
   let activeIdx = $state(-1);   // flat index across local + remote
 
-  // Filtered sections based on current input text
-  const q = $derived(dropdownOpen ? config.branch.toLowerCase() : '');
+  // Only filter while the user is actively typing — not on initial open.
+  // Without this, opening the dropdown with branch="main" would hide all
+  // remote branches that don't contain "main".
+  let userTyping = $state(false);
+  const q = $derived(dropdownOpen && userTyping ? config.branch.toLowerCase() : '');
   const filteredLocal  = $derived(q ? branchList.local.filter(b  => b.toLowerCase().includes(q)) : branchList.local);
   const filteredRemote = $derived(q ? branchList.remote.filter(b => b.toLowerCase().includes(q)) : branchList.remote);
   const totalCount     = $derived(filteredLocal.length + filteredRemote.length);
@@ -67,6 +70,7 @@
 
   function openDropdown() {
     dropdownOpen = true;
+    userTyping = false; // show all branches unfiltered on open
     activeIdx = -1;
     branchError = '';
   }
@@ -78,6 +82,7 @@
 
   function onBranchInput() {
     dropdownOpen = true;
+    userTyping = true; // user started typing — enable filter
     activeIdx = -1;
     branchError = '';
   }
@@ -126,13 +131,14 @@
 
   async function selectBranch(branch: string) {
     dropdownOpen = false;
+    userTyping = false;
     config.branch = branch;
     focusedBranch = branch; // prevent onBranchBlur from triggering a duplicate checkout
     branchError = '';
     if (!config.local_path) { onchange?.(); return; }
     checkingOut = true;
     try {
-      await checkoutBranch(config.local_path, branch);
+      await checkoutAndPull(config.local_path, branch, config.remote_url, config.auth, proxy);
       onchange?.();
     } catch (e) {
       branchError = String(e).replace(/^(Git error:|error:)\s*/i, '').trim();
