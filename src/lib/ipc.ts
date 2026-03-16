@@ -236,6 +236,23 @@ export async function checkoutBranch(localPath: string, branch: string): Promise
 }
 
 /**
+ * Download a repository ZIP archive from the platform API (Codeup / GitLab / GitHub).
+ * Returns the server-side path to the downloaded zip file.
+ */
+export async function downloadZipFromRepo(
+  remoteUrl: string,
+  branch: string,
+  token: string,
+  platform: string,
+  proxy: ProxyConfig,
+): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>('download_repo_zip', { remoteUrl, branch, token, platform, proxy });
+  }
+  return webPost<string>('/download/repo-zip', { remote_url: remoteUrl, branch, token, platform, proxy });
+}
+
+/**
  * Checkout a branch then pull latest code (fetch + reset to origin/<branch>).
  * Passes auth and proxy so credentials match the main sync flow.
  */

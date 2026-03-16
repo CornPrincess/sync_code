@@ -6,6 +6,7 @@
 // Config is stored in the OS user-config directory (same location as the desktop app).
 
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -628,6 +629,67 @@ function sendPlainError(res, message, code = 500) {
 
 let syncLocked = false;
 
+// ─── PLATFORM API DOWNLOAD ─────────────────────────────────────────────────
+
+/** Build archive download URL and auth header details for a given platform. */
+function buildArchiveApiUrl(remoteUrl, branch, platform) {
+  const u = new URL(remoteUrl);
+  const projectPath = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
+  if (platform === 'github') {
+    const [owner, repo] = projectPath.split('/');
+    return {
+      url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/zipball/${encodeURIComponent(branch)}`,
+      headerName: 'Authorization',
+      headerValue: '',  // filled in by caller
+      isGitHub: true,
+    };
+  } else {
+    // Codeup / GitLab
+    const encodedPath = encodeURIComponent(projectPath);
+    return {
+      url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=zip`,
+      headerName: 'PRIVATE-TOKEN',
+      headerValue: '',  // filled in by caller
+      isGitHub: false,
+    };
+  }
+}
+
+/** Download a URL to a Buffer, following up to 10 redirects. */
+function downloadBuffer(url, reqHeaders, redirectCount = 0) {
+  if (redirectCount > 10) return Promise.reject(new Error('Too many redirects'));
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const opts = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers: reqHeaders,
+    };
+    const req = mod.request(opts, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        resolve(downloadBuffer(res.headers.location, reqHeaders, redirectCount + 1));
+        return;
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${Buffer.concat(chunks).toString().slice(0, 300)}`)));
+        return;
+      }
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 /**
  * Dispatch API routes. Returns false when no route matched (→ fall through to static).
  * Returning anything else (including undefined) means the route was handled.
@@ -664,6 +726,41 @@ async function handleApiRoute(req, res, parsedUrl) {
     });
 
     return sendJson(res, { path: savePath });
+  }
+
+  // ── Download repo ZIP from platform API ──────────────────────────────────
+  if (pathname === '/api/download/repo-zip' && method === 'POST') {
+    const { remote_url, branch, token, platform } = await readJsonBody(req);
+    if (!remote_url || !branch || !token) {
+      return sendPlainError(res, 'remote_url, branch, and token are required');
+    }
+    let apiInfo;
+    try {
+      apiInfo = buildArchiveApiUrl(remote_url.trim(), branch.trim(), platform || 'github');
+    } catch (e) {
+      return sendPlainError(res, `Invalid remote URL: ${e.message}`);
+    }
+    const reqHeaders = { [apiInfo.headerName]: apiInfo.headerValue || token };
+    if (apiInfo.isGitHub) {
+      reqHeaders['Accept'] = 'application/vnd.github+json';
+      reqHeaders['X-GitHub-Api-Version'] = '2022-11-28';
+      reqHeaders['User-Agent'] = 'sync-code/1.0';
+      // GitHub uses Bearer auth
+      reqHeaders['Authorization'] = `Bearer ${token}`;
+    } else {
+      reqHeaders['PRIVATE-TOKEN'] = token;
+    }
+    try {
+      const buf = await downloadBuffer(apiInfo.url, reqHeaders);
+      const ts = Date.now();
+      const tmpDir = path.join(os.tmpdir(), `sync-code-dl-${ts}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const zipPath = path.join(tmpDir, 'repo.zip');
+      fs.writeFileSync(zipPath, buf);
+      return sendJson(res, zipPath);
+    } catch (e) {
+      return sendPlainError(res, e.message);
+    }
   }
 
   // ── Sync: start (SSE stream) ─────────────────────────────────────────────

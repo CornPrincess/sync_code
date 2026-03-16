@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { isTauri, listBranches, refreshBranches, checkoutAndPull, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
+  import { isTauri, listBranches, refreshBranches, checkoutAndPull, downloadZipFromRepo, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
 
   const isTauriCtx = isTauri();
 
@@ -205,6 +205,29 @@
     // Reset so the same file can be re-selected
     input.value = '';
   }
+
+  // ── Download ZIP from platform API ──────────────────────────────────────
+  let zipDownloadStatus = $state<'idle' | 'downloading' | 'done' | 'error'>('idle');
+  let zipDownloadError = $state('');
+
+  async function handleDownloadRepoZip() {
+    if (!config.remote_url.trim()) { zipDownloadError = '请填写仓库地址'; zipDownloadStatus = 'error'; return; }
+    if (!config.branch.trim())     { zipDownloadError = '请填写分支名';   zipDownloadStatus = 'error'; return; }
+    if (!config.auth.token.trim()) { zipDownloadError = '请填写 Access Token'; zipDownloadStatus = 'error'; return; }
+    zipDownloadStatus = 'downloading';
+    zipDownloadError = '';
+    try {
+      const zipPath = await downloadZipFromRepo(
+        config.remote_url, config.branch, config.auth.token, config.platform ?? 'github', proxy,
+      );
+      config.zip_path = zipPath;
+      zipDownloadStatus = 'done';
+      onchange?.();
+    } catch (e: unknown) {
+      zipDownloadStatus = 'error';
+      zipDownloadError = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
 <div class="repo-panel">
@@ -268,6 +291,96 @@
       下载仓库的 ZIP 包（如 GitHub → Code → Download ZIP），选择后自动解压并同步到 Repo A。
       解压时自动处理顶层包裹目录（如 <code>repo-main/</code>）。
     </p>
+
+    <!-- Download from platform API -->
+    <details class="zip-dl-details">
+      <summary class="zip-dl-summary">从平台 API 下载 ZIP（可选）</summary>
+      <div class="zip-dl-body">
+        <!-- Platform -->
+        <label class="field">
+          <span class="field-label">平台</span>
+          <div class="platform-row">
+            {#each [
+              { value: 'github',  label: 'GitHub' },
+              { value: 'gitlab',  label: 'GitLab' },
+              { value: 'codeup',  label: 'Codeup' },
+            ] as p}
+              <button
+                type="button"
+                class="platform-btn"
+                class:selected={config.platform === p.value}
+                onclick={() => { config.platform = p.value; onchange?.(); }}
+              >{p.label}</button>
+            {/each}
+          </div>
+        </label>
+
+        <!-- Remote URL -->
+        <label class="field">
+          <span class="field-label">仓库地址</span>
+          <input
+            type="text"
+            bind:value={config.remote_url}
+            onchange={onchange}
+            placeholder={config.platform === 'codeup'
+              ? 'https://codeup.aliyun.com/org/repo.git'
+              : config.platform === 'gitlab'
+              ? 'https://gitlab.com/user/repo.git'
+              : 'https://github.com/user/repo.git'}
+            class="input"
+          />
+        </label>
+
+        <!-- Branch -->
+        <label class="field">
+          <span class="field-label">分支名</span>
+          <input
+            type="text"
+            bind:value={config.branch}
+            onchange={onchange}
+            placeholder="main"
+            class="input"
+          />
+        </label>
+
+        <!-- Token -->
+        <label class="field">
+          <span class="field-label">
+            {config.platform === 'codeup' ? 'Codeup 个人访问令牌' : config.platform === 'gitlab' ? 'GitLab Personal Access Token' : 'GitHub Personal Access Token'}
+          </span>
+          <input
+            type="password"
+            bind:value={config.auth.token}
+            onchange={onchange}
+            placeholder={config.platform === 'codeup' ? 'your-codeup-token' : config.platform === 'gitlab' ? 'glpat-xxxx' : 'ghp_xxxx'}
+            class="input"
+            autocomplete="off"
+          />
+        </label>
+        {#if config.platform === 'codeup'}
+          <p class="zip-note">Yunxiao → 个人中心 → 个人访问令牌（需要 read_repository 权限）。</p>
+        {:else if config.platform === 'gitlab'}
+          <p class="zip-note">GitLab → User Settings → Access Tokens（需要 read_repository 权限）。</p>
+        {:else}
+          <p class="zip-note">GitHub → Settings → Developer settings → Personal access tokens（需要 repo 权限）。</p>
+        {/if}
+
+        <button
+          type="button"
+          class="btn-download"
+          onclick={handleDownloadRepoZip}
+          disabled={zipDownloadStatus === 'downloading'}
+        >
+          {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载 ZIP`}
+        </button>
+        {#if zipDownloadStatus === 'done' && config.zip_path}
+          <span class="zip-upload-ok">✓ 已下载：{config.zip_path.split(/[\\/]/).pop()}</span>
+        {/if}
+        {#if zipDownloadStatus === 'error'}
+          <span class="zip-upload-err">下载失败：{zipDownloadError}</span>
+        {/if}
+      </div>
+    </details>
   {:else}
 
   <!-- Local Path -->
@@ -1021,4 +1134,62 @@
     font-size: 0.72rem;
     font-style: normal;
   }
+
+  /* ── ZIP download from platform ──────────────────────────────────────────── */
+  .zip-dl-details {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .zip-dl-summary {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .zip-dl-summary::-webkit-details-marker { display: none; }
+
+  .zip-dl-summary::before {
+    content: '▶';
+    font-size: 0.65rem;
+    transition: transform 0.15s;
+  }
+
+  .zip-dl-details[open] .zip-dl-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .zip-dl-body {
+    padding: 12px 14px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .btn-download {
+    margin-top: 4px;
+    padding: 7px 14px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    align-self: flex-start;
+  }
+
+  .btn-download:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-download:not(:disabled):hover { opacity: 0.85; }
 </style>
