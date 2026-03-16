@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
@@ -12,6 +13,70 @@ use crate::commands::git::{
 };
 use crate::error::{AppError, Result};
 use crate::models::{AppConfig, FileChange, SyncEvent};
+
+// ---------------------------------------------------------------------------
+// ZIP extraction helpers
+// ---------------------------------------------------------------------------
+
+/// Extract a zip archive to a uniquely-named temp directory.
+/// Returns the path to the temp directory.
+fn extract_zip(zip_path_str: &str, log: &LogFn) -> Result<PathBuf> {
+    let zip_path = Path::new(zip_path_str);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tmp_dir = std::env::temp_dir().join(format!("sync-code-zip-{ts}"));
+
+    emit_log(log, SyncEvent::info(format!("Extracting ZIP: {}", zip_path.display())));
+    emit_log(log, SyncEvent::info(format!("Temp dir: {}", tmp_dir.display())));
+    fs::create_dir_all(&tmp_dir)?;
+
+    let file = fs::File::open(zip_path)
+        .map_err(|e| AppError::Validation(format!("Cannot open ZIP file: {e}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| AppError::Git(format!("Invalid ZIP file: {e}")))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)
+            .map_err(|e| AppError::Git(format!("ZIP read error: {e}")))?;
+
+        // Guard against path traversal (zip-slip)
+        let raw = entry.name().replace('\\', "/");
+        if raw.starts_with('/') || raw.contains("..") {
+            continue;
+        }
+
+        let out_path = tmp_dir.join(&raw);
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path)?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf)
+                .map_err(|e| AppError::Git(format!("ZIP entry read error: {e}")))?;
+            fs::write(&out_path, &buf)?;
+        }
+    }
+
+    emit_log(log, SyncEvent::info("ZIP extracted successfully."));
+    Ok(tmp_dir)
+}
+
+/// If the directory contains exactly one subdirectory (and nothing else),
+/// return its path — this handles GitHub's wrapper dir (e.g. `repo-main/`).
+fn find_single_top_dir(dir: &Path) -> Option<PathBuf> {
+    let entries: Vec<_> = fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).collect();
+    if entries.len() == 1 {
+        let entry = &entries[0];
+        if entry.file_type().ok()?.is_dir() {
+            return Some(entry.path());
+        }
+    }
+    None
+}
 
 // ---------------------------------------------------------------------------
 // File mirroring (unchanged from before)
@@ -137,13 +202,26 @@ pub async fn start_sync(
 
 pub async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>> {
     let path_a = PathBuf::from(&config.repo_a.local_path);
-    let path_b = PathBuf::from(&config.repo_b.local_path);
     let proxy = &config.proxy;
+    let use_zip = config.repo_b.use_zip;
 
     // ── Step 1: Validate ────────────────────────────────────────────────────
     emit_log(log, SyncEvent::info("━━ Step 1/6 — Validating repositories ━━"));
     validate_repo(log, &path_a).await?;
-    validate_repo(log, &path_b).await?;
+    if use_zip {
+        // In zip mode, validate that the zip file exists instead of a git repo.
+        let zip = config.repo_b.zip_path.trim();
+        if zip.is_empty() {
+            return Err(AppError::Validation("Repo B: ZIP 文件路径不能为空。".into()));
+        }
+        if !Path::new(zip).exists() {
+            return Err(AppError::Validation(format!("ZIP file not found: {zip}")));
+        }
+        emit_log(log, SyncEvent::info(format!("  ZIP source: {zip}")));
+    } else {
+        let path_b = PathBuf::from(&config.repo_b.local_path);
+        validate_repo(log, &path_b).await?;
+    }
 
     // ── Step 2: Check Repo A is clean ───────────────────────────────────────
     emit_log(log, SyncEvent::info("━━ Step 2/6 — Checking Repo A working tree ━━"));
@@ -169,26 +247,43 @@ pub async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>>
         git_pull(log, &config.repo_a, proxy).await?;
     }
 
-    // ── Step 4: Pull Repo B ─────────────────────────────────────────────────
-    emit_log(
-        log,
-        SyncEvent::info(format!(
-            "━━ Step 4/6 — Pulling Repo B ({}@{}) ━━",
-            config.repo_b.local_path, config.repo_b.branch
-        )),
-    );
-    git_pull(log, &config.repo_b, proxy).await?;
+    // ── Step 4: Pull Repo B  OR  extract zip ────────────────────────────────
+    let (src_path, tmp_dir): (PathBuf, Option<PathBuf>) = if use_zip {
+        emit_log(log, SyncEvent::info("━━ Step 4/6 — Extracting Repo B ZIP ━━"));
+        let tmp = extract_zip(config.repo_b.zip_path.trim(), log)?;
+        // Handle GitHub/GitLab wrapper directory (e.g. repo-main/ inside the zip)
+        let src = find_single_top_dir(&tmp).unwrap_or_else(|| tmp.clone());
+        emit_log(log, SyncEvent::info(format!("  Using source directory: {}", src.display())));
+        (src, Some(tmp))
+    } else {
+        let path_b = PathBuf::from(&config.repo_b.local_path);
+        emit_log(
+            log,
+            SyncEvent::info(format!(
+                "━━ Step 4/6 — Pulling Repo B ({}@{}) ━━",
+                config.repo_b.local_path, config.repo_b.branch
+            )),
+        );
+        git_pull(log, &config.repo_b, proxy).await?;
+        (path_b, None)
+    };
 
     // ── Step 5: Mirror B → A ────────────────────────────────────────────────
     emit_log(log, SyncEvent::info("━━ Step 5/6 — Mirroring Repo B → Repo A ━━"));
     let log_clone = Arc::clone(log);
-    let path_b_clone = path_b.clone();
+    let src_clone = src_path.clone();
     let path_a_clone = path_a.clone();
-    tokio::task::spawn_blocking(move || {
-        mirror_files(&log_clone, &path_b_clone, &path_a_clone)
+    let mirror_result = tokio::task::spawn_blocking(move || {
+        mirror_files(&log_clone, &src_clone, &path_a_clone)
     })
     .await
-    .map_err(|e| AppError::Git(e.to_string()))??;
+    .map_err(|e| AppError::Git(e.to_string()))?;
+
+    // Always clean up the temp dir even if mirror failed
+    if let Some(ref td) = tmp_dir {
+        let _ = fs::remove_dir_all(td);
+    }
+    mirror_result?;
 
     // ── Step 6: Stage all changes, collect file list ─────────────────────────
     emit_log(log, SyncEvent::info("━━ Step 6/6 — Staging changes in Repo A ━━"));

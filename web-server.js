@@ -343,6 +343,75 @@ async function checkoutAndPull(localPath, branch, remoteUrl, auth, proxy, platfo
   }
 }
 
+// ─── ZIP EXTRACTION ────────────────────────────────────────────────────────
+
+/**
+ * Extract a zip archive to a fresh temp directory using system tools.
+ * - Windows: PowerShell Expand-Archive (built-in on Windows 10+)
+ * - Linux/macOS: unzip
+ * Returns the temp directory path.
+ */
+function extractZip(zipPath, logFn) {
+  const tmpDir = path.join(os.tmpdir(), `sync-code-zip-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  if (logFn) {
+    logFn('info', `Extracting ZIP: ${zipPath}`);
+    logFn('info', `Temp dir: ${tmpDir}`);
+  }
+
+  return new Promise((resolve, reject) => {
+    let proc;
+    if (process.platform === 'win32') {
+      // PowerShell is available on all supported Windows versions
+      proc = spawn('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${tmpDir.replace(/'/g, "''")}' -Force`,
+      ], { stdio: 'pipe' });
+    } else {
+      proc = spawn('unzip', ['-o', zipPath, '-d', tmpDir], { stdio: 'pipe' });
+    }
+
+    let errOut = '';
+    proc.stderr?.on('data', chunk => { errOut += chunk.toString(); });
+    proc.stdout?.on('data', chunk => { errOut += chunk.toString(); }); // unzip uses stdout for errors too
+
+    proc.on('error', err => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+      reject(new Error(
+        process.platform === 'win32'
+          ? `PowerShell Expand-Archive failed: ${err.message}`
+          : `unzip not found: ${err.message}. Please install unzip.`,
+      ));
+    });
+
+    proc.on('close', code => {
+      // unzip exits 1 for warnings (still OK); PowerShell exits 0 on success
+      const ok = process.platform === 'win32' ? code === 0 : (code === 0 || code === 1);
+      if (ok) {
+        if (logFn) logFn('info', 'ZIP extracted successfully.');
+        resolve(tmpDir);
+      } else {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+        reject(new Error(`ZIP extraction failed (exit ${code}): ${errOut.trim()}`));
+      }
+    });
+  });
+}
+
+/**
+ * If `dir` contains exactly one subdirectory (and nothing else),
+ * return that subdirectory — handles GitHub's wrapper dir (e.g. `repo-main/`).
+ */
+function findSingleTopDir(dir) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    if (entries.length === 1 && entries[0].isDirectory()) {
+      return path.join(dir, entries[0].name);
+    }
+  } catch { /* ok */ }
+  return null;
+}
+
 // ─── FILE MIRRORING ────────────────────────────────────────────────────────
 
 /** Recursively list all files under `dir`, relative to `dir`. Skips `.git/`. */
@@ -422,28 +491,63 @@ async function mirrorFiles(src, dst, logFn) {
 
 async function doSync(config, logFn) {
   const { repo_a, repo_b, proxy } = config;
+  const useZip = !!repo_b.use_zip;
 
-  logFn('info', 'Validating repositories…');
+  // ── Step 1: Validate ──────────────────────────────────────────────────────
+  logFn('info', '━━ Step 1/6 — Validating repositories ━━');
   validateRepo(repo_a.local_path);
-  validateRepo(repo_b.local_path);
+  if (useZip) {
+    const zip = repo_b.zip_path?.trim();
+    if (!zip) throw new Error('Repo B: ZIP 文件路径不能为空。');
+    if (!fs.existsSync(zip)) throw new Error(`ZIP file not found: ${zip}`);
+    logFn('info', `  ZIP source: ${zip}`);
+  } else {
+    validateRepo(repo_b.local_path);
+  }
 
-  logFn('info', 'Checking Repo A is clean…');
+  // ── Step 2: Check Repo A clean ────────────────────────────────────────────
+  logFn('info', '━━ Step 2/6 — Checking Repo A working tree ━━');
   if (await isDirty(repo_a.local_path)) {
     throw new Error('Repo A has uncommitted changes. Please commit or discard them before syncing.');
   }
+  logFn('info', '  Repo A working tree is clean.');
 
+  // ── Step 3: Pull Repo A ───────────────────────────────────────────────────
+  logFn('info', `━━ Step 3/6 — Pulling Repo A (${repo_a.local_path}@${repo_a.branch}) ━━`);
   if (repo_a.remote_url) {
-    logFn('info', 'Pulling Repo A…');
     await gitPull(repo_a, proxy, logFn);
+  } else {
+    logFn('info', '  No remote URL for Repo A — skipping pull.');
   }
 
-  logFn('info', 'Pulling Repo B…');
-  await gitPull(repo_b, proxy, logFn);
+  // ── Step 4: Pull Repo B  OR  extract zip ─────────────────────────────────
+  let srcPath;
+  let tmpDir = null;
+  if (useZip) {
+    logFn('info', '━━ Step 4/6 — Extracting Repo B ZIP ━━');
+    tmpDir = await extractZip(repo_b.zip_path.trim(), logFn);
+    // Handle GitHub/GitLab wrapper directory (e.g. repo-main/ inside the zip)
+    const singleTop = findSingleTopDir(tmpDir);
+    srcPath = singleTop || tmpDir;
+    logFn('info', `  Using source directory: ${srcPath}`);
+  } else {
+    logFn('info', `━━ Step 4/6 — Pulling Repo B (${repo_b.local_path}@${repo_b.branch}) ━━`);
+    await gitPull(repo_b, proxy, logFn);
+    srcPath = repo_b.local_path;
+  }
 
-  logFn('info', 'Mirroring files Repo B → Repo A…');
-  await mirrorFiles(repo_b.local_path, repo_a.local_path, logFn);
+  // ── Step 5: Mirror B → A ─────────────────────────────────────────────────
+  logFn('info', '━━ Step 5/6 — Mirroring Repo B → Repo A ━━');
+  try {
+    await mirrorFiles(srcPath, repo_a.local_path, logFn);
+  } finally {
+    if (tmpDir) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  }
 
-  logFn('info', 'Staging changes in Repo A…');
+  // ── Step 6: Stage ─────────────────────────────────────────────────────────
+  logFn('info', '━━ Step 6/6 — Staging changes in Repo A ━━');
   await gitAddAll(repo_a.local_path, logFn);
   const staged = await getStagedFiles(repo_a.local_path);
   logFn('success', `Ready for review: ${staged.length} file change(s) staged.`);

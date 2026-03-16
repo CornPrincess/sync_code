@@ -17,6 +17,10 @@ export interface RepoConfig {
   auth: AuthConfig;
   /** "github" | "gitlab" | "codeup" */
   platform: string;
+  /** When true, use zip_path as source instead of git pull (Repo B only) */
+  use_zip: boolean;
+  /** Absolute path to the zip file when use_zip is true */
+  zip_path: string;
 }
 
 export interface ProxyConfig {
@@ -50,7 +54,7 @@ export function defaultAuthConfig(): AuthConfig {
 }
 
 export function defaultRepoConfig(): RepoConfig {
-  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github' };
+  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github', use_zip: false, zip_path: '' };
 }
 
 export function defaultProxyConfig(): ProxyConfig {

@@ -8,12 +8,15 @@
     label,
     config = $bindable(),
     proxy,
-    onchange
+    onchange,
+    showZipOption = false,
   }: {
     label: string;
     config: RepoConfig;
     proxy: ProxyConfig;
     onchange?: () => void;
+    /** If true, show a "Use ZIP file" toggle for this repo panel (Repo B only). */
+    showZipOption?: boolean;
   } = $props();
 
   // ── Branch combobox state ──────────────────────────────────────────────────
@@ -159,10 +162,51 @@
     const selected = await open({ directory: false, multiple: false });
     if (typeof selected === 'string') { config.auth.ssh_key_path = selected; onchange?.(); }
   }
+
+  async function browseZipFile() {
+    const selected = await open({ directory: false, multiple: false, filters: [{ name: 'ZIP Archive', extensions: ['zip'] }] });
+    if (typeof selected === 'string') { config.zip_path = selected; onchange?.(); }
+  }
 </script>
 
 <div class="repo-panel">
   <h2 class="panel-title">{label}</h2>
+
+  <!-- ZIP source toggle (Repo B only) -->
+  {#if showZipOption}
+    <label class="field zip-toggle-field">
+      <input
+        type="checkbox"
+        class="zip-checkbox"
+        bind:checked={config.use_zip}
+        onchange={onchange}
+      />
+      <span class="zip-toggle-label">使用 ZIP 包作为源（无法通过 git 获取时）</span>
+    </label>
+  {/if}
+
+  {#if showZipOption && config.use_zip}
+    <!-- ZIP mode: show only the zip file path -->
+    <label class="field">
+      <span class="field-label">ZIP 文件路径</span>
+      <div class="path-row">
+        <input
+          type="text"
+          bind:value={config.zip_path}
+          onchange={onchange}
+          placeholder="/path/to/repo.zip"
+          class="input"
+        />
+        {#if isTauriCtx}
+          <button type="button" class="btn-browse" onclick={browseZipFile}>Browse</button>
+        {/if}
+      </div>
+    </label>
+    <p class="zip-note">
+      下载仓库的 ZIP 包（如 GitHub → Code → Download ZIP），选择后自动解压并同步到 Repo A。
+      解压时自动处理顶层包裹目录（如 <code>repo-main/</code>）。
+    </p>
+  {:else}
 
   <!-- Local Path -->
   <label class="field">
@@ -359,7 +403,7 @@
     {/if}
   </div>
 
-  <!-- Authentication -->
+  <!-- Authentication (git mode only) -->
   <details class="auth-details">
     <summary class="auth-summary">
       Authentication
@@ -451,6 +495,8 @@
       {/if}
     </div>
   </details>
+
+  {/if}<!-- end zip/git conditional -->
 </div>
 
 <style>
@@ -853,6 +899,49 @@
   }
 
   .auth-note code {
+    font-family: var(--font-mono);
+    background: #0d1117;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.72rem;
+    font-style: normal;
+  }
+
+  /* ── ZIP source toggle ───────────────────────────────────────────────────── */
+  .zip-toggle-field {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(121, 192, 255, 0.06);
+    border: 1px solid rgba(121, 192, 255, 0.25);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .zip-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .zip-toggle-label {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .zip-note {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-style: italic;
+    line-height: 1.5;
+  }
+
+  .zip-note code {
     font-family: var(--font-mono);
     background: #0d1117;
     padding: 1px 4px;

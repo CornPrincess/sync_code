@@ -44,6 +44,12 @@ pub struct RepoConfig {
     /// Hosting platform: "github" | "gitlab" | "codeup" (default "github")
     #[serde(default = "default_platform")]
     pub platform: String,
+    /// When true, use zip_path as source instead of git pull (Repo B only)
+    #[serde(default)]
+    pub use_zip: bool,
+    /// Absolute path to the zip file when use_zip is true
+    #[serde(default)]
+    pub zip_path: String,
 }
 
 fn default_platform() -> String {
