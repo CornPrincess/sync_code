@@ -646,6 +646,26 @@ async function handleApiRoute(req, res, parsedUrl) {
     return;
   }
 
+  // ── ZIP upload (web mode: browser can't reveal full path, so we receive the file) ──
+  if (pathname === '/api/upload/zip' && method === 'POST') {
+    const rawName = req.headers['x-filename'];
+    const safeName = (rawName ? decodeURIComponent(rawName) : 'upload.zip')
+      .replace(/[^a-zA-Z0-9._\-]/g, '_');
+    const uploadDir = path.join(os.tmpdir(), 'sync-code-uploads');
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const savePath = path.join(uploadDir, `${Date.now()}-${safeName}`);
+
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(savePath);
+      req.pipe(out);
+      out.on('finish', resolve);
+      out.on('error', reject);
+      req.on('error', reject);
+    });
+
+    return sendJson(res, { path: savePath });
+  }
+
   // ── Sync: start (SSE stream) ─────────────────────────────────────────────
   if (pathname === '/api/sync/start' && method === 'POST') {
     if (syncLocked) return sendPlainError(res, 'Sync already in progress', 409);

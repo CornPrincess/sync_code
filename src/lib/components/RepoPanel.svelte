@@ -167,6 +167,44 @@
     const selected = await open({ directory: false, multiple: false, filters: [{ name: 'ZIP Archive', extensions: ['zip'] }] });
     if (typeof selected === 'string') { config.zip_path = selected; onchange?.(); }
   }
+
+  // ── Web-mode zip upload ──────────────────────────────────────────────────
+  let zipFileInput: HTMLInputElement | undefined = $state();
+  let zipUploadStatus = $state<'idle' | 'uploading' | 'done' | 'error'>('idle');
+  let zipUploadError = $state('');
+
+  function openZipPicker() {
+    zipFileInput?.click();
+  }
+
+  async function onZipFileSelected(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    zipUploadStatus = 'uploading';
+    zipUploadError = '';
+    try {
+      const res = await fetch('/api/upload/zip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Filename': encodeURIComponent(file.name),
+        },
+        body: file,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const { path: serverPath } = await res.json() as { path: string };
+      config.zip_path = serverPath;
+      zipUploadStatus = 'done';
+      onchange?.();
+    } catch (e: unknown) {
+      zipUploadStatus = 'error';
+      zipUploadError = e instanceof Error ? e.message : String(e);
+    }
+    // Reset so the same file can be re-selected
+    input.value = '';
+  }
 </script>
 
 <div class="repo-panel">
@@ -198,9 +236,33 @@
           class="input"
         />
         {#if isTauriCtx}
+          <!-- Tauri: native file-open dialog, returns full path directly -->
           <button type="button" class="btn-browse" onclick={browseZipFile}>Browse</button>
+        {:else}
+          <!-- Web: upload selected file to local Node.js server, get server-side path back -->
+          <input
+            bind:this={zipFileInput}
+            type="file"
+            accept=".zip"
+            style="display:none"
+            onchange={onZipFileSelected}
+          />
+          <button
+            type="button"
+            class="btn-browse"
+            onclick={openZipPicker}
+            disabled={zipUploadStatus === 'uploading'}
+          >
+            {zipUploadStatus === 'uploading' ? '上传中…' : '选择文件'}
+          </button>
         {/if}
       </div>
+      {#if !isTauriCtx && zipUploadStatus === 'done' && config.zip_path}
+        <span class="zip-upload-ok">✓ 已上传：{config.zip_path.split(/[\\/]/).pop()}</span>
+      {/if}
+      {#if !isTauriCtx && zipUploadStatus === 'error'}
+        <span class="zip-upload-err">上传失败：{zipUploadError}</span>
+      {/if}
     </label>
     <p class="zip-note">
       下载仓库的 ZIP 包（如 GitHub → Code → Download ZIP），选择后自动解压并同步到 Repo A。
@@ -931,6 +993,16 @@
     color: var(--text-primary);
     cursor: pointer;
     user-select: none;
+  }
+
+  .zip-upload-ok {
+    font-size: 0.75rem;
+    color: #3fb950;
+  }
+
+  .zip-upload-err {
+    font-size: 0.75rem;
+    color: var(--error, #f85149);
   }
 
   .zip-note {
