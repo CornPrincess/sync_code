@@ -50,10 +50,17 @@ pub struct RepoConfig {
     /// Absolute path to the zip file when use_zip is true
     #[serde(default)]
     pub zip_path: String,
+    /// "local" | "api" — which ZIP source tab is selected (frontend only, persisted for UX)
+    #[serde(default = "default_zip_source_mode")]
+    pub zip_source_mode: String,
 }
 
 fn default_platform() -> String {
     "github".into()
+}
+
+fn default_zip_source_mode() -> String {
+    "local".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

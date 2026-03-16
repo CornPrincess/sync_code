@@ -30,7 +30,7 @@ function configDir() {
 }
 
 const DEFAULT_AUTH   = { auth_type: 'none', username: '', password: '', token: '', ssh_key_path: '' };
-const DEFAULT_REPO   = { local_path: '', remote_url: '', branch: '', auth: { ...DEFAULT_AUTH }, platform: 'github', use_zip: false, zip_path: '' };
+const DEFAULT_REPO   = { local_path: '', remote_url: '', branch: '', auth: { ...DEFAULT_AUTH }, platform: 'github', use_zip: false, zip_path: '', zip_source_mode: 'local' };
 const DEFAULT_PROXY  = { enabled: false, http_proxy: '', https_proxy: '', no_proxy: '' };
 
 function makeDefaultConfig() {

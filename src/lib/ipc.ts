@@ -21,6 +21,8 @@ export interface RepoConfig {
   use_zip: boolean;
   /** Absolute path to the zip file when use_zip is true */
   zip_path: string;
+  /** "local" | "api" — which ZIP source tab is active (persisted for UX) */
+  zip_source_mode: string;
 }
 
 export interface ProxyConfig {
@@ -62,7 +64,7 @@ export function defaultAuthConfig(): AuthConfig {
 }
 
 export function defaultRepoConfig(): RepoConfig {
-  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github', use_zip: false, zip_path: '' };
+  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github', use_zip: false, zip_path: '', zip_source_mode: 'local' };
 }
 
 export function defaultProxyConfig(): ProxyConfig {

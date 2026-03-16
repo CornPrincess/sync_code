@@ -208,8 +208,14 @@
     input.value = '';
   }
 
-  // ── ZIP source mode ────────────────────────────────────────────────────
-  let zipSourceMode = $state<'local' | 'api'>('local');
+  // ── ZIP source mode — persisted in config.zip_source_mode ─────────────
+  const zipSourceMode = $derived<'local' | 'api'>(
+    (config.zip_source_mode === 'api') ? 'api' : 'local'
+  );
+  function setZipSourceMode(mode: 'local' | 'api') {
+    config.zip_source_mode = mode;
+    onchange?.();
+  }
 
   // ── Preset management ──────────────────────────────────────────────────
   let selectedPresetId = $state('');
@@ -277,7 +283,7 @@
   <!-- Preset selector -->
   <div class="preset-bar">
     <select class="preset-select" bind:value={selectedPresetId} onchange={loadPreset}>
-      <option value="">— 选择配置预设 —</option>
+      <option value="">— 选择仓库配置 —</option>
       {#each (presets ?? []) as p (p.id)}
         <option value={p.id}>{p.name}</option>
       {/each}
@@ -296,10 +302,10 @@
       <button type="button" class="preset-btn preset-confirm" onclick={confirmSavePreset} title="确认保存">✓</button>
       <button type="button" class="preset-btn preset-cancel" onclick={() => { showSaveInput = false; newPresetName = ''; }} title="取消">✕</button>
     {:else}
-      <button type="button" class="preset-btn" onclick={() => { showSaveInput = true; newPresetName = ''; }} title="保存当前配置为预设">+ 保存</button>
+      <button type="button" class="preset-btn" onclick={() => { showSaveInput = true; newPresetName = ''; }} title="保存当前配置为新仓库配置">+ 保存</button>
       {#if selectedPresetId}
-        <button type="button" class="preset-btn" onclick={updateCurrentPreset} title="更新当前预设">更新</button>
-        <button type="button" class="preset-btn preset-delete" onclick={deleteCurrentPreset} title="删除此预设">删除</button>
+        <button type="button" class="preset-btn" onclick={updateCurrentPreset} title="更新当前仓库配置">更新</button>
+        <button type="button" class="preset-btn preset-delete" onclick={deleteCurrentPreset} title="删除此仓库配置">删除</button>
       {/if}
     {/if}
   </div>
@@ -326,13 +332,13 @@
         type="button"
         class="zip-tab-btn"
         class:selected={zipSourceMode === 'local'}
-        onclick={() => zipSourceMode = 'local'}
+        onclick={() => setZipSourceMode('local')}
       >本地文件</button>
       <button
         type="button"
         class="zip-tab-btn"
         class:selected={zipSourceMode === 'api'}
-        onclick={() => zipSourceMode = 'api'}
+        onclick={() => setZipSourceMode('api')}
       >从平台 API 下载</button>
     </div>
 
@@ -595,6 +601,17 @@
       >
         {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载`}
       </button>
+      <!-- Read-only display of the downloaded archive path -->
+      <label class="field" style="margin-top: 8px;">
+        <span class="field-label">已下载的压缩包路径</span>
+        <input
+          type="text"
+          class="input zip-path-readonly"
+          value={config.zip_path || ''}
+          disabled
+          placeholder="点击上方「下载」按钮后自动填入"
+        />
+      </label>
       {#if zipDownloadStatus === 'done' && config.zip_path}
         <span class="zip-upload-ok">✓ 已下载：{config.zip_path.split(/[\\/]/).pop()}</span>
       {/if}
@@ -1332,6 +1349,12 @@
   .zip-upload-ok {
     font-size: 0.75rem;
     color: #3fb950;
+  }
+
+  .zip-path-readonly {
+    opacity: 0.55;
+    cursor: default;
+    font-size: 0.78rem;
   }
 
   .zip-upload-err {
