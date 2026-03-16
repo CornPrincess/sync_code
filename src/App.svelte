@@ -132,6 +132,7 @@
       <RepoPanel
         label="Repo A (target)"
         bind:config={configStore.value.repo_a}
+        bind:presets={configStore.value.repo_a_presets}
         proxy={configStore.value.proxy}
         onchange={onConfigChange}
       />
@@ -139,6 +140,7 @@
       <RepoPanel
         label="Repo B (source)"
         bind:config={configStore.value.repo_b}
+        bind:presets={configStore.value.repo_b_presets}
         proxy={configStore.value.proxy}
         onchange={onConfigChange}
         showZipOption={true}

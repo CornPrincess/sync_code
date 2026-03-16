@@ -30,10 +30,18 @@ export interface ProxyConfig {
   no_proxy: string;
 }
 
+export interface RepoPreset {
+  id: string;
+  name: string;
+  config: RepoConfig;
+}
+
 export interface AppConfig {
   repo_a: RepoConfig;
   repo_b: RepoConfig;
   proxy: ProxyConfig;
+  repo_a_presets: RepoPreset[];
+  repo_b_presets: RepoPreset[];
 }
 
 export interface SyncEvent {
@@ -66,6 +74,8 @@ export function defaultAppConfig(): AppConfig {
     repo_a: defaultRepoConfig(),
     repo_b: defaultRepoConfig(),
     proxy: defaultProxyConfig(),
+    repo_a_presets: [],
+    repo_b_presets: [],
   };
 }
 

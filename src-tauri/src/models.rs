@@ -65,12 +65,25 @@ pub struct ProxyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RepoPreset {
+    pub id: String,
+    pub name: String,
+    pub config: RepoConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub repo_a: RepoConfig,
     pub repo_b: RepoConfig,
     /// Missing in old config files → deserialize as Default (disabled)
     #[serde(default)]
     pub proxy: ProxyConfig,
+    /// Saved presets for Repo A (target)
+    #[serde(default)]
+    pub repo_a_presets: Vec<RepoPreset>,
+    /// Saved presets for Repo B (source)
+    #[serde(default)]
+    pub repo_b_presets: Vec<RepoPreset>,
 }
 
 #[derive(Debug, Clone, Serialize)]
