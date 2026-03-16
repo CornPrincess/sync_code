@@ -164,7 +164,7 @@
   }
 
   async function browseZipFile() {
-    const selected = await open({ directory: false, multiple: false, filters: [{ name: 'ZIP Archive', extensions: ['zip'] }] });
+    const selected = await open({ directory: false, multiple: false, filters: [{ name: 'Archive', extensions: ['zip', 'gz'] }] });
     if (typeof selected === 'string') { config.zip_path = selected; onchange?.(); }
   }
 
@@ -206,9 +206,10 @@
     input.value = '';
   }
 
-  // ── Download ZIP from platform API ──────────────────────────────────────
+  // ── Download archive from platform API ──────────────────────────────────
   let zipDownloadStatus = $state<'idle' | 'downloading' | 'done' | 'error'>('idle');
   let zipDownloadError = $state('');
+  let downloadFormat = $state<'zip' | 'tar.gz'>('zip');
 
   async function handleDownloadRepoZip() {
     if (!config.remote_url.trim()) { zipDownloadError = '请填写仓库地址'; zipDownloadStatus = 'error'; return; }
@@ -217,10 +218,10 @@
     zipDownloadStatus = 'downloading';
     zipDownloadError = '';
     try {
-      const zipPath = await downloadZipFromRepo(
-        config.remote_url, config.branch, config.auth.token, config.platform ?? 'github', proxy,
+      const archivePath = await downloadZipFromRepo(
+        config.remote_url, config.branch, config.auth.token, config.platform ?? 'github', proxy, downloadFormat,
       );
-      config.zip_path = zipPath;
+      config.zip_path = archivePath;
       zipDownloadStatus = 'done';
       onchange?.();
     } catch (e: unknown) {
@@ -247,15 +248,15 @@
   {/if}
 
   {#if showZipOption && config.use_zip}
-    <!-- ZIP mode: show only the zip file path -->
+    <!-- Archive mode: show archive file path -->
     <label class="field">
-      <span class="field-label">ZIP 文件路径</span>
+      <span class="field-label">压缩包路径（.zip 或 .tar.gz）</span>
       <div class="path-row">
         <input
           type="text"
           bind:value={config.zip_path}
           onchange={onchange}
-          placeholder="/path/to/repo.zip"
+          placeholder="/path/to/repo.zip or repo.tar.gz"
           class="input"
         />
         {#if isTauriCtx}
@@ -266,7 +267,7 @@
           <input
             bind:this={zipFileInput}
             type="file"
-            accept=".zip"
+            accept=".zip,.tar.gz,.tgz"
             style="display:none"
             onchange={onZipFileSelected}
           />
@@ -288,7 +289,7 @@
       {/if}
     </label>
     <p class="zip-note">
-      下载仓库的 ZIP 包（如 GitHub → Code → Download ZIP），选择后自动解压并同步到 Repo A。
+      支持 <code>.zip</code> 和 <code>.tar.gz</code> 格式。选择后自动解压并同步到 Repo A。
       解压时自动处理顶层包裹目录（如 <code>repo-main/</code>）。
     </p>
 
@@ -365,13 +366,28 @@
           <p class="zip-note">GitHub → Settings → Developer settings → Personal access tokens（需要 repo 权限）。</p>
         {/if}
 
+        <!-- Format selector -->
+        <label class="field">
+          <span class="field-label">下载格式</span>
+          <div class="format-row">
+            {#each [{ value: 'zip', label: 'ZIP (.zip)' }, { value: 'tar.gz', label: 'Tarball (.tar.gz)' }] as f}
+              <button
+                type="button"
+                class="format-btn"
+                class:selected={downloadFormat === f.value}
+                onclick={() => { downloadFormat = f.value as 'zip' | 'tar.gz'; }}
+              >{f.label}</button>
+            {/each}
+          </div>
+        </label>
+
         <button
           type="button"
           class="btn-download"
           onclick={handleDownloadRepoZip}
           disabled={zipDownloadStatus === 'downloading'}
         >
-          {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载 ZIP`}
+          {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载`}
         </button>
         {#if zipDownloadStatus === 'done' && config.zip_path}
           <span class="zip-upload-ok">✓ 已下载：{config.zip_path.split(/[\\/]/).pop()}</span>
@@ -1192,4 +1208,29 @@
 
   .btn-download:disabled { opacity: 0.55; cursor: not-allowed; }
   .btn-download:not(:disabled):hover { opacity: 0.85; }
+
+  .format-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .format-btn {
+    padding: 5px 12px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .format-btn.selected {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .format-btn:not(.selected):hover {
+    border-color: var(--text-secondary);
+  }
 </style>

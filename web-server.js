@@ -400,6 +400,53 @@ function extractZip(zipPath, logFn) {
 }
 
 /**
+ * Extract a tar.gz (or .tgz) archive to a temp directory using the system `tar` command.
+ * Available on Linux, macOS, and Windows 10+ (build 17063+).
+ * Returns the temp directory path.
+ */
+function extractTarGz(archivePath, logFn) {
+  const tmpDir = path.join(os.tmpdir(), `sync-code-tar-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  if (logFn) {
+    logFn('info', `Extracting tar.gz: ${archivePath}`);
+    logFn('info', `Temp dir: ${tmpDir}`);
+  }
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn('tar', ['-xzf', archivePath, '-C', tmpDir], { stdio: 'pipe', shell: false });
+
+    let errOut = '';
+    proc.stderr?.on('data', chunk => { errOut += chunk.toString(); });
+
+    proc.on('error', err => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+      reject(new Error(`tar not found: ${err.message}. Please install tar (available on Linux/macOS; Windows 10+ includes it).`));
+    });
+
+    proc.on('close', code => {
+      if (code === 0) {
+        if (logFn) logFn('info', 'tar.gz extracted successfully.');
+        resolve(tmpDir);
+      } else {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+        reject(new Error(`tar extraction failed (exit ${code}): ${errOut.trim()}`));
+      }
+    });
+  });
+}
+
+/**
+ * Extract an archive file, auto-detecting format from extension.
+ * Supports .zip and .tar.gz / .tgz.
+ */
+function extractArchive(archivePath, logFn) {
+  if (archivePath.endsWith('.tar.gz') || archivePath.endsWith('.tgz')) {
+    return extractTarGz(archivePath, logFn);
+  }
+  return extractZip(archivePath, logFn);
+}
+
+/**
  * If `dir` contains exactly one subdirectory (and nothing else),
  * return that subdirectory — handles GitHub's wrapper dir (e.g. `repo-main/`).
  */
@@ -526,7 +573,7 @@ async function doSync(config, logFn) {
   let tmpDir = null;
   if (useZip) {
     logFn('info', '━━ Step 4/6 — Extracting Repo B ZIP ━━');
-    tmpDir = await extractZip(repo_b.zip_path.trim(), logFn);
+    tmpDir = await extractArchive(repo_b.zip_path.trim(), logFn);
     // Handle GitHub/GitLab wrapper directory (e.g. repo-main/ inside the zip)
     const singleTop = findSingleTopDir(tmpDir);
     srcPath = singleTop || tmpDir;
@@ -631,23 +678,28 @@ let syncLocked = false;
 
 // ─── PLATFORM API DOWNLOAD ─────────────────────────────────────────────────
 
-/** Build archive download URL and auth header details for a given platform. */
-function buildArchiveApiUrl(remoteUrl, branch, platform) {
+/**
+ * Build archive download URL and auth header details for a given platform.
+ * @param {string} format  "zip" or "tar.gz" (default "zip")
+ */
+function buildArchiveApiUrl(remoteUrl, branch, platform, format = 'zip') {
   const u = new URL(remoteUrl);
   const projectPath = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
   if (platform === 'github') {
     const [owner, repo] = projectPath.split('/');
+    // GitHub uses separate endpoints: zipball vs tarball
+    const archiveType = format === 'tar.gz' ? 'tarball' : 'zipball';
     return {
-      url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/zipball/${encodeURIComponent(branch)}`,
+      url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${archiveType}/${encodeURIComponent(branch)}`,
       headerName: 'Authorization',
       headerValue: '',  // filled in by caller
       isGitHub: true,
     };
   } else {
-    // Codeup / GitLab
+    // Codeup / GitLab: use format query parameter
     const encodedPath = encodeURIComponent(projectPath);
     return {
-      url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=zip`,
+      url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
       headerName: 'PRIVATE-TOKEN',
       headerValue: '',  // filled in by caller
       isGitHub: false,
@@ -730,23 +782,23 @@ async function handleApiRoute(req, res, parsedUrl) {
 
   // ── Download repo ZIP from platform API ──────────────────────────────────
   if (pathname === '/api/download/repo-zip' && method === 'POST') {
-    const { remote_url, branch, token, platform } = await readJsonBody(req);
+    const { remote_url, branch, token, platform, format } = await readJsonBody(req);
     if (!remote_url || !branch || !token) {
       return sendPlainError(res, 'remote_url, branch, and token are required');
     }
+    const fmt = format === 'tar.gz' ? 'tar.gz' : 'zip';
     let apiInfo;
     try {
-      apiInfo = buildArchiveApiUrl(remote_url.trim(), branch.trim(), platform || 'github');
+      apiInfo = buildArchiveApiUrl(remote_url.trim(), branch.trim(), platform || 'github', fmt);
     } catch (e) {
       return sendPlainError(res, `Invalid remote URL: ${e.message}`);
     }
-    const reqHeaders = { [apiInfo.headerName]: apiInfo.headerValue || token };
+    const reqHeaders = {};
     if (apiInfo.isGitHub) {
+      reqHeaders['Authorization'] = `Bearer ${token}`;
       reqHeaders['Accept'] = 'application/vnd.github+json';
       reqHeaders['X-GitHub-Api-Version'] = '2022-11-28';
       reqHeaders['User-Agent'] = 'sync-code/1.0';
-      // GitHub uses Bearer auth
-      reqHeaders['Authorization'] = `Bearer ${token}`;
     } else {
       reqHeaders['PRIVATE-TOKEN'] = token;
     }
@@ -755,9 +807,10 @@ async function handleApiRoute(req, res, parsedUrl) {
       const ts = Date.now();
       const tmpDir = path.join(os.tmpdir(), `sync-code-dl-${ts}`);
       fs.mkdirSync(tmpDir, { recursive: true });
-      const zipPath = path.join(tmpDir, 'repo.zip');
-      fs.writeFileSync(zipPath, buf);
-      return sendJson(res, zipPath);
+      const filename = fmt === 'tar.gz' ? 'repo.tar.gz' : 'repo.zip';
+      const archivePath = path.join(tmpDir, filename);
+      fs.writeFileSync(archivePath, buf);
+      return sendJson(res, archivePath);
     } catch (e) {
       return sendPlainError(res, e.message);
     }

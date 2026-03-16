@@ -26,11 +26,13 @@ fn split_url(url: &str) -> Option<(&str, &str, &str)> {
 }
 
 /// Build the archive download URL and the auth header (name, value).
+/// `format` is "zip" or "tar.gz".
 fn build_archive_url(
     remote_url: &str,
     branch: &str,
     platform: &str,
     token: &str,
+    format: &str,
 ) -> Result<(String, String, String)> {
     let (scheme, host, path_raw) =
         split_url(remote_url.trim()).ok_or_else(|| {
@@ -40,31 +42,35 @@ fn build_archive_url(
     let project_path = path_raw.trim_end_matches(".git");
 
     if platform == "github" {
-        // https://api.github.com/repos/{owner}/{repo}/zipball/{branch}
+        // GitHub provides separate zipball / tarball endpoints
+        let archive_type = if format == "tar.gz" { "tarball" } else { "zipball" };
         let (owner, repo) = project_path.split_once('/').ok_or_else(|| {
             AppError::Validation("GitHub URL must contain owner/repo path".into())
         })?;
         let url = format!(
-            "https://api.github.com/repos/{}/{}/zipball/{}",
+            "https://api.github.com/repos/{}/{}/{}/{}",
             percent_encode(owner),
             percent_encode(repo),
+            archive_type,
             percent_encode(branch),
         );
         Ok((url, "Authorization".into(), format!("Bearer {token}")))
     } else {
-        // Codeup / GitLab: https://{host}/api/v4/projects/{encoded}/repository/archive
+        // Codeup / GitLab: format parameter selects zip or tar.gz
         let encoded_path = percent_encode(project_path);
         let url = format!(
             "{scheme}://{host}/api/v4/projects/{encoded_path}/repository/archive\
-             ?sha={}&format=zip",
+             ?sha={}&format={}",
             percent_encode(branch),
+            percent_encode(format),
         );
         Ok((url, "PRIVATE-TOKEN".into(), token.to_string()))
     }
 }
 
-/// Download a repository ZIP archive from the platform API using `curl`.
-/// Returns the path to the downloaded zip file in a temp directory.
+/// Download a repository archive from the platform API using `curl`.
+/// `format` is "zip" or "tar.gz" (defaults to "zip" when empty).
+/// Returns the path to the downloaded archive file in a temp directory.
 #[tauri::command]
 pub async fn download_repo_zip(
     remote_url: String,
@@ -72,6 +78,7 @@ pub async fn download_repo_zip(
     token: String,
     platform: String,
     proxy: ProxyConfig,
+    format: Option<String>,
 ) -> Result<String> {
     if remote_url.trim().is_empty() {
         return Err(AppError::Validation("Remote URL is required".into()));
@@ -83,8 +90,9 @@ pub async fn download_repo_zip(
         return Err(AppError::Validation("Access token is required".into()));
     }
 
+    let fmt = format.as_deref().unwrap_or("zip");
     let (url, header_name, header_value) =
-        build_archive_url(&remote_url, &branch, &platform, &token)?;
+        build_archive_url(&remote_url, &branch, &platform, &token, fmt)?;
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -93,7 +101,8 @@ pub async fn download_repo_zip(
     let tmp_dir = std::env::temp_dir().join(format!("sync-code-dl-{ts}"));
     std::fs::create_dir_all(&tmp_dir)
         .map_err(|e| AppError::Git(format!("Cannot create temp dir: {e}")))?;
-    let out_path: PathBuf = tmp_dir.join("repo.zip");
+    let filename = if fmt == "tar.gz" { "repo.tar.gz" } else { "repo.zip" };
+    let out_path: PathBuf = tmp_dir.join(filename);
 
     let mut args: Vec<String> = vec![
         "-L".into(),

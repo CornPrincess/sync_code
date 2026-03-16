@@ -65,6 +65,42 @@ fn extract_zip(zip_path_str: &str, log: &LogFn) -> Result<PathBuf> {
     Ok(tmp_dir)
 }
 
+/// Extract a tar.gz (or .tgz) archive to a uniquely-named temp directory.
+/// Shells out to the system `tar` command (available on Linux, macOS, Windows 10+).
+fn extract_targz(archive_path_str: &str, log: &LogFn) -> Result<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tmp_dir = std::env::temp_dir().join(format!("sync-code-tar-{ts}"));
+
+    emit_log(log, SyncEvent::info(format!("Extracting tar.gz: {archive_path_str}")));
+    emit_log(log, SyncEvent::info(format!("Temp dir: {}", tmp_dir.display())));
+    fs::create_dir_all(&tmp_dir)?;
+
+    let output = std::process::Command::new("tar")
+        .args(["-xzf", archive_path_str, "-C", &tmp_dir.to_string_lossy()])
+        .output()
+        .map_err(|e| AppError::Git(format!("tar command not found or failed to start: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Git(format!("tar extraction failed: {}", stderr.trim())));
+    }
+
+    emit_log(log, SyncEvent::info("tar.gz extracted successfully."));
+    Ok(tmp_dir)
+}
+
+/// Extract an archive (auto-detect zip vs tar.gz from extension).
+fn extract_archive(archive_path_str: &str, log: &LogFn) -> Result<PathBuf> {
+    if archive_path_str.ends_with(".tar.gz") || archive_path_str.ends_with(".tgz") {
+        extract_targz(archive_path_str, log)
+    } else {
+        extract_zip(archive_path_str, log)
+    }
+}
+
 /// If the directory contains exactly one subdirectory (and nothing else),
 /// return its path — this handles GitHub's wrapper dir (e.g. `repo-main/`).
 fn find_single_top_dir(dir: &Path) -> Option<PathBuf> {
@@ -250,7 +286,7 @@ pub async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>>
     // ── Step 4: Pull Repo B  OR  extract zip ────────────────────────────────
     let (src_path, tmp_dir): (PathBuf, Option<PathBuf>) = if use_zip {
         emit_log(log, SyncEvent::info("━━ Step 4/6 — Extracting Repo B ZIP ━━"));
-        let tmp = extract_zip(config.repo_b.zip_path.trim(), log)?;
+        let tmp = extract_archive(config.repo_b.zip_path.trim(), log)?;
         // Handle GitHub/GitLab wrapper directory (e.g. repo-main/ inside the zip)
         let src = find_single_top_dir(&tmp).unwrap_or_else(|| tmp.clone());
         emit_log(log, SyncEvent::info(format!("  Using source directory: {}", src.display())));
