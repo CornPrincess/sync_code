@@ -564,6 +564,55 @@ pub async fn checkout_and_pull(
     Ok(())
 }
 
+/// Decode a git-quoted path back to a UTF-8 `String`.
+///
+/// When `core.quotePath=true` (git default), non-ASCII bytes in filenames are
+/// wrapped in double-quotes and each byte is escaped as an octal sequence, e.g.
+/// `"src/\344\270\255\346\226\207.txt"`.  This function handles both forms so
+/// Chinese (and other non-ASCII) filenames are always returned correctly.
+fn decode_git_path(s: &str) -> String {
+    let s = s.trim();
+    if !s.starts_with('"') || !s.ends_with('"') {
+        return s.to_string();
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut bytes: Vec<u8> = Vec::with_capacity(inner.len());
+    let chars: Vec<char> = inner.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            // Octal escape \XYZ
+            if i + 3 < chars.len()
+                && chars[i + 1].is_ascii_digit() && chars[i+1] < '8'
+                && chars[i + 2].is_ascii_digit() && chars[i+2] < '8'
+                && chars[i + 3].is_ascii_digit() && chars[i+3] < '8'
+            {
+                let octal: String = chars[i + 1..=i + 3].iter().collect();
+                if let Ok(byte) = u8::from_str_radix(&octal, 8) {
+                    bytes.push(byte);
+                }
+                i += 4;
+            } else {
+                // Other C-style escape
+                match chars[i + 1] {
+                    'n'  => { bytes.push(b'\n'); i += 2; }
+                    't'  => { bytes.push(b'\t'); i += 2; }
+                    '\\' => { bytes.push(b'\\'); i += 2; }
+                    '"'  => { bytes.push(b'"');  i += 2; }
+                    _    => { bytes.push(chars[i] as u8); i += 1; }
+                }
+            }
+        } else {
+            // Regular ASCII or already-valid UTF-8 character
+            let mut buf = [0u8; 4];
+            let encoded = chars[i].encode_utf8(&mut buf);
+            bytes.extend_from_slice(encoded.as_bytes());
+            i += 1;
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| s.to_string())
+}
+
 /// Parse `git diff --cached --name-status` output into `FileChange` objects.
 fn parse_name_status(output: &str) -> Vec<FileChange> {
     let mut files = Vec::new();
@@ -574,37 +623,15 @@ fn parse_name_status(output: &str) -> Vec<FileChange> {
         }
         // Status code may have a similarity score suffix (e.g. "R90"), strip it.
         let code = parts[0].chars().next().unwrap_or('?');
+        let p1 = || decode_git_path(parts.get(1).unwrap_or(&""));
+        let p2 = || decode_git_path(parts.get(2).unwrap_or(&""));
         let (status, path, old_path) = match code {
-            'A' => (
-                "added",
-                parts.get(1).unwrap_or(&"").to_string(),
-                None,
-            ),
-            'M' => (
-                "modified",
-                parts.get(1).unwrap_or(&"").to_string(),
-                None,
-            ),
-            'D' => (
-                "deleted",
-                parts.get(1).unwrap_or(&"").to_string(),
-                None,
-            ),
-            'R' => (
-                "renamed",
-                parts.get(2).unwrap_or(&"").to_string(),
-                Some(parts.get(1).unwrap_or(&"").to_string()),
-            ),
-            'C' => (
-                "copied",
-                parts.get(2).unwrap_or(&"").to_string(),
-                Some(parts.get(1).unwrap_or(&"").to_string()),
-            ),
-            _ => (
-                "unknown",
-                parts.get(1).unwrap_or(&"").to_string(),
-                None,
-            ),
+            'A' => ("added",    p1(), None),
+            'M' => ("modified", p1(), None),
+            'D' => ("deleted",  p1(), None),
+            'R' => ("renamed",  p2(), Some(p1())),
+            'C' => ("copied",   p2(), Some(p1())),
+            _   => ("unknown",  p1(), None),
         };
         if !path.is_empty() {
             files.push(FileChange { status: status.to_string(), path, old_path });

@@ -177,25 +177,27 @@ function runGit(dir, args, { env = process.env, logFn = null, displayArgs = null
     if (logFn) logFn('info', `$ git ${show.join(' ')}`);
 
     const proc = spawn('git', args, { cwd: dir, env, shell: false });
-    let stdout = '';
-    let stderr = '';
+    // Collect raw Buffers so multibyte UTF-8 sequences split across chunk
+    // boundaries are decoded correctly (chunk.toString() would corrupt them).
+    const stdoutChunks = [];
+    const stderrChunks = [];
 
     proc.stdout.on('data', chunk => {
-      const s = chunk.toString();
-      stdout += s;
+      stdoutChunks.push(chunk);
       if (logFn) {
-        s.split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
+        chunk.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
       }
     });
     proc.stderr.on('data', chunk => {
-      const s = chunk.toString();
-      stderr += s;
+      stderrChunks.push(chunk);
       if (logFn) {
-        s.split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
+        chunk.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
       }
     });
     proc.on('error', err => reject(new Error(`Failed to spawn git: ${err.message}`)));
     proc.on('close', code => {
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -233,17 +235,57 @@ async function gitAddAll(localPath, logFn) {
   await runGit(localPath, ['add', '-A'], { logFn });
 }
 
+/**
+ * Decode a git-quoted path back to a UTF-8 string.
+ * When core.quotePath=true (git default), non-ASCII bytes in filenames are
+ * wrapped in double-quotes and escaped as octal sequences, e.g.:
+ *   "src/\344\270\255\346\226\207.txt"
+ * This function decodes both quoted (octal) and unquoted (plain UTF-8) forms.
+ */
+function decodeGitPath(s) {
+  if (!s || !s.startsWith('"') || !s.endsWith('"')) return s;
+  const inner = s.slice(1, -1);
+  const bytes = [];
+  let i = 0;
+  while (i < inner.length) {
+    if (inner[i] === '\\' && i + 1 < inner.length) {
+      // Octal escape: \XYZ (three octal digits)
+      if (i + 3 < inner.length &&
+          inner[i+1] >= '0' && inner[i+1] <= '7' &&
+          inner[i+2] >= '0' && inner[i+2] <= '7' &&
+          inner[i+3] >= '0' && inner[i+3] <= '7') {
+        bytes.push(parseInt(inner.slice(i + 1, i + 4), 8));
+        i += 4;
+      } else {
+        // Other C-style escapes: \n \t \\ \"
+        switch (inner[i + 1]) {
+          case 'n':  bytes.push(0x0A); break;
+          case 't':  bytes.push(0x09); break;
+          case '\\': bytes.push(0x5C); break;
+          case '"':  bytes.push(0x22); break;
+          default:   bytes.push(inner.charCodeAt(i)); i -= 1; break;
+        }
+        i += 2;
+      }
+    } else {
+      bytes.push(inner.charCodeAt(i));
+      i += 1;
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
 /** Parse `git diff --cached --name-status` output into FileChange objects. */
 function parseNameStatus(output) {
   return output.split('\n').filter(l => l.trim()).map(line => {
     const parts = line.split('\t');
     const status = parts[0] ?? '';
-    if (status.startsWith('R')) return { status: 'renamed', path: parts[2] ?? '', old_path: parts[1] ?? null };
-    if (status.startsWith('C')) return { status: 'copied',  path: parts[2] ?? '', old_path: parts[1] ?? null };
-    if (status === 'A') return { status: 'added',    path: parts[1] ?? '', old_path: null };
-    if (status === 'M') return { status: 'modified', path: parts[1] ?? '', old_path: null };
-    if (status === 'D') return { status: 'deleted',  path: parts[1] ?? '', old_path: null };
-    return { status: 'unknown', path: parts[1] ?? '', old_path: null };
+    if (status.startsWith('R')) return { status: 'renamed', path: decodeGitPath(parts[2] ?? ''), old_path: decodeGitPath(parts[1] ?? '') };
+    if (status.startsWith('C')) return { status: 'copied',  path: decodeGitPath(parts[2] ?? ''), old_path: decodeGitPath(parts[1] ?? '') };
+    if (status === 'A') return { status: 'added',    path: decodeGitPath(parts[1] ?? ''), old_path: null };
+    if (status === 'M') return { status: 'modified', path: decodeGitPath(parts[1] ?? ''), old_path: null };
+    if (status === 'D') return { status: 'deleted',  path: decodeGitPath(parts[1] ?? ''), old_path: null };
+    return { status: 'unknown', path: decodeGitPath(parts[1] ?? ''), old_path: null };
   });
 }
 
