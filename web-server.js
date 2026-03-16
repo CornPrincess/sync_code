@@ -442,8 +442,18 @@ function extractZip(zipPath, logFn) {
 }
 
 /**
- * Extract a tar.gz (or .tgz) archive to a temp directory using the system `tar` command.
- * Available on Linux, macOS, and Windows 10+ (build 17063+).
+ * Extract a tar.gz (or .tgz) archive to a temp directory.
+ *
+ * On Windows, the built-in tar.exe (bsdtar) decodes non-ASCII filenames
+ * using the system ANSI code page (ACP, e.g. CP1252) rather than UTF-8,
+ * which garbles Chinese filenames.  We work around this by:
+ *   1. Trying Python 3's tarfile module first — it always uses UTF-8 and
+ *      writes filenames via the Windows Unicode API, so Chinese names are
+ *      preserved correctly.
+ *   2. Falling back to system tar with --hdrcharset=UTF-8 if Python is
+ *      not installed.
+ *
+ * On Linux/macOS, the locale is UTF-8 and system tar works correctly.
  * Returns the temp directory path.
  */
 function extractTarGz(archivePath, logFn) {
@@ -454,26 +464,62 @@ function extractTarGz(archivePath, logFn) {
     logFn('info', `Temp dir: ${tmpDir}`);
   }
 
+  // Python one-liner: open the archive and extract to tmpDir.
+  // Uses tarfile which decodes header bytes as UTF-8 by default.
+  const PYTHON_SCRIPT =
+    'import tarfile,sys; tarfile.open(sys.argv[1],"r:gz").extractall(sys.argv[2])';
+
   return new Promise((resolve, reject) => {
-    const proc = spawn('tar', ['-xzf', archivePath, '-C', tmpDir], { stdio: 'pipe', shell: false });
-
-    let errOut = '';
-    proc.stderr?.on('data', chunk => { errOut += chunk.toString(); });
-
-    proc.on('error', err => {
+    const cleanup = () => {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
-      reject(new Error(`tar not found: ${err.message}. Please install tar (available on Linux/macOS; Windows 10+ includes it).`));
-    });
+    };
 
-    proc.on('close', code => {
-      if (code === 0) {
-        if (logFn) logFn('info', 'tar.gz extracted successfully.');
-        resolve(tmpDir);
-      } else {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
-        reject(new Error(`tar extraction failed (exit ${code}): ${errOut.trim()}`));
-      }
-    });
+    function runProc(cmd, args) {
+      const proc = spawn(cmd, args, { stdio: 'pipe', shell: false });
+      let errOut = '';
+      proc.stderr?.on('data', chunk => { errOut += chunk.toString('utf8'); });
+      proc.stdout?.on('data', chunk => { errOut += chunk.toString('utf8'); });
+      return { proc, getErr: () => errOut };
+    }
+
+    if (process.platform === 'win32') {
+      // ── Attempt 1: Python 3 ──────────────────────────────────────────────
+      const { proc: pyProc, getErr: getPyErr } = runProc('python', [
+        '-c', PYTHON_SCRIPT, archivePath, tmpDir,
+      ]);
+
+      pyProc.on('error', () => {
+        // Python not found — fall back to system tar with explicit charset.
+        if (logFn) logFn('info', 'Python not found, falling back to tar --hdrcharset=UTF-8');
+        const { proc: tarProc, getErr: getTarErr } = runProc('tar', [
+          '--hdrcharset=UTF-8', '-xzf', archivePath, '-C', tmpDir,
+        ]);
+        tarProc.on('error', err => {
+          cleanup();
+          reject(new Error(`tar not found: ${err.message}. Install tar (Windows 10+ includes it) or Python 3.`));
+        });
+        tarProc.on('close', code => {
+          if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
+          else { cleanup(); reject(new Error(`tar extraction failed (exit ${code}): ${getTarErr().trim()}`)); }
+        });
+      });
+
+      pyProc.on('close', code => {
+        if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
+        else { cleanup(); reject(new Error(`tar.gz extraction failed (exit ${code}): ${getPyErr().trim()}`)); }
+      });
+    } else {
+      // ── Linux / macOS: system tar with UTF-8 locale ─────────────────────
+      const { proc, getErr } = runProc('tar', ['-xzf', archivePath, '-C', tmpDir]);
+      proc.on('error', err => {
+        cleanup();
+        reject(new Error(`tar not found: ${err.message}. Please install tar.`));
+      });
+      proc.on('close', code => {
+        if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
+        else { cleanup(); reject(new Error(`tar extraction failed (exit ${code}): ${getErr().trim()}`)); }
+      });
+    }
   });
 }
 
