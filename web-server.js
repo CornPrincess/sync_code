@@ -30,7 +30,7 @@ function configDir() {
 }
 
 const DEFAULT_AUTH   = { auth_type: 'none', username: '', password: '', token: '', ssh_key_path: '' };
-const DEFAULT_REPO   = { local_path: '', remote_url: '', branch: '', auth: { ...DEFAULT_AUTH }, platform: 'github' };
+const DEFAULT_REPO   = { local_path: '', remote_url: '', branch: '', auth: { ...DEFAULT_AUTH }, platform: 'github', use_zip: false, zip_path: '' };
 const DEFAULT_PROXY  = { enabled: false, http_proxy: '', https_proxy: '', no_proxy: '' };
 
 function makeDefaultConfig() {
@@ -38,6 +38,8 @@ function makeDefaultConfig() {
     repo_a: { ...DEFAULT_REPO, auth: { ...DEFAULT_AUTH } },
     repo_b: { ...DEFAULT_REPO, auth: { ...DEFAULT_AUTH } },
     proxy: { ...DEFAULT_PROXY },
+    repo_a_presets: [],
+    repo_b_presets: [],
   };
 }
 
@@ -50,6 +52,8 @@ function loadConfig() {
       repo_a: { ...DEFAULT_REPO, ...raw.repo_a, auth: { ...DEFAULT_AUTH, ...(raw.repo_a?.auth ?? {}) } },
       repo_b: { ...DEFAULT_REPO, ...raw.repo_b, auth: { ...DEFAULT_AUTH, ...(raw.repo_b?.auth ?? {}) } },
       proxy:  { ...DEFAULT_PROXY, ...(raw.proxy ?? {}) },
+      repo_a_presets: raw.repo_a_presets ?? [],
+      repo_b_presets: raw.repo_b_presets ?? [],
     };
   } catch {
     return makeDefaultConfig();
