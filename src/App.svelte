@@ -45,10 +45,9 @@
     if (!a.local_path.trim()) return 'Repo A: local path is required.';
     if (!a.branch.trim()) return 'Repo A: branch is required.';
     if (b.use_zip) {
-      if (!b.zip_path?.trim()) {
-        if (b.zip_source_mode === 'api') return 'Repo B: 请先点击「下载」按钮获取压缩包，再执行同步。';
-        return 'Repo B: ZIP 文件路径不能为空。';
-      }
+      // In API download mode the path is filled automatically after clicking download.
+      // Don't validate zip_path here — the backend will surface a clear error if needed.
+      if (b.zip_source_mode !== 'api' && !b.zip_path?.trim()) return 'Repo B: ZIP 文件路径不能为空。';
     } else {
       if (!b.local_path.trim()) return 'Repo B: local path is required.';
       if (!b.branch.trim()) return 'Repo B: branch is required.';
