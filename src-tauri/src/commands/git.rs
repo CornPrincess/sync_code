@@ -227,7 +227,7 @@ pub async fn git_add_all(log: &LogFn, path: &Path, auth: Option<&AuthConfig>, pr
 /// Return the list of staged changes (`git diff --cached --name-status`).
 pub async fn get_staged_files(path: &Path) -> Result<Vec<FileChange>> {
     let out = Command::new("git")
-        .args(["diff", "--cached", "--name-status"])
+        .args(["-c", "core.quotePath=false", "diff", "--cached", "--name-status"])
         .current_dir(path)
         .output()
         .await?;

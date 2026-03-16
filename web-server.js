@@ -248,7 +248,7 @@ function parseNameStatus(output) {
 }
 
 async function getStagedFiles(localPath) {
-  const out = await runGit(localPath, ['diff', '--cached', '--name-status']);
+  const out = await runGit(localPath, ['-c', 'core.quotePath=false', 'diff', '--cached', '--name-status']);
   return parseNameStatus(out);
 }
 
