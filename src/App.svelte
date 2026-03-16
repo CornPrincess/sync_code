@@ -75,7 +75,7 @@
     } catch (e: unknown) {
       syncedConfig = null;
       status = 'error';
-      errorMessage = typeof e === 'string' ? e : 'An unexpected error occurred.';
+      errorMessage = e instanceof Error ? e.message : typeof e === 'string' ? e : 'An unexpected error occurred.';
     }
   }
 
@@ -102,7 +102,7 @@
       syncedConfig = null;
     } catch (e: unknown) {
       status = 'error';
-      errorMessage = typeof e === 'string' ? e : 'Push failed.';
+      errorMessage = e instanceof Error ? e.message : typeof e === 'string' ? e : 'Push failed.';
     }
   }
 
