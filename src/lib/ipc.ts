@@ -17,6 +17,10 @@ export interface RepoConfig {
   auth: AuthConfig;
   /** "github" | "gitlab" | "codeup" */
   platform: string;
+  /** When true, use zip_path as source instead of git pull (Repo B only) */
+  use_zip: boolean;
+  /** Absolute path to the zip file when use_zip is true */
+  zip_path: string;
 }
 
 export interface ProxyConfig {
@@ -50,7 +54,7 @@ export function defaultAuthConfig(): AuthConfig {
 }
 
 export function defaultRepoConfig(): RepoConfig {
-  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github' };
+  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github', use_zip: false, zip_path: '' };
 }
 
 export function defaultProxyConfig(): ProxyConfig {
@@ -229,6 +233,25 @@ export async function refreshBranches(localPath: string, proxy: ProxyConfig): Pr
 export async function checkoutBranch(localPath: string, branch: string): Promise<void> {
   if (isTauri()) return invoke<void>('checkout_branch', { localPath, branch });
   return webPost<void>('/branches/checkout', { local_path: localPath, branch });
+}
+
+/**
+ * Download a repository archive from the platform API (Codeup / GitLab / GitHub).
+ * @param format  "zip" or "tar.gz" (default "zip")
+ * Returns the server-side path to the downloaded archive file.
+ */
+export async function downloadZipFromRepo(
+  remoteUrl: string,
+  branch: string,
+  token: string,
+  platform: string,
+  proxy: ProxyConfig,
+  format: string = 'zip',
+): Promise<string> {
+  if (isTauri()) {
+    return invoke<string>('download_repo_zip', { remoteUrl, branch, token, platform, proxy, format });
+  }
+  return webPost<string>('/download/repo-zip', { remote_url: remoteUrl, branch, token, platform, proxy, format });
 }
 
 /**

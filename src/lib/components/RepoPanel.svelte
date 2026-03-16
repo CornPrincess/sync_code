@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { isTauri, listBranches, refreshBranches, checkoutAndPull, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
+  import { isTauri, listBranches, refreshBranches, checkoutAndPull, downloadZipFromRepo, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
 
   const isTauriCtx = isTauri();
 
@@ -8,12 +8,15 @@
     label,
     config = $bindable(),
     proxy,
-    onchange
+    onchange,
+    showZipOption = false,
   }: {
     label: string;
     config: RepoConfig;
     proxy: ProxyConfig;
     onchange?: () => void;
+    /** If true, show a "Use ZIP file" toggle for this repo panel (Repo B only). */
+    showZipOption?: boolean;
   } = $props();
 
   // ── Branch combobox state ──────────────────────────────────────────────────
@@ -159,10 +162,242 @@
     const selected = await open({ directory: false, multiple: false });
     if (typeof selected === 'string') { config.auth.ssh_key_path = selected; onchange?.(); }
   }
+
+  async function browseZipFile() {
+    const selected = await open({ directory: false, multiple: false, filters: [{ name: 'Archive', extensions: ['zip', 'gz'] }] });
+    if (typeof selected === 'string') { config.zip_path = selected; onchange?.(); }
+  }
+
+  // ── Web-mode zip upload ──────────────────────────────────────────────────
+  let zipFileInput: HTMLInputElement | undefined = $state();
+  let zipUploadStatus = $state<'idle' | 'uploading' | 'done' | 'error'>('idle');
+  let zipUploadError = $state('');
+
+  function openZipPicker() {
+    zipFileInput?.click();
+  }
+
+  async function onZipFileSelected(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    zipUploadStatus = 'uploading';
+    zipUploadError = '';
+    try {
+      const res = await fetch('/api/upload/zip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Filename': encodeURIComponent(file.name),
+        },
+        body: file,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const { path: serverPath } = await res.json() as { path: string };
+      config.zip_path = serverPath;
+      zipUploadStatus = 'done';
+      onchange?.();
+    } catch (e: unknown) {
+      zipUploadStatus = 'error';
+      zipUploadError = e instanceof Error ? e.message : String(e);
+    }
+    // Reset so the same file can be re-selected
+    input.value = '';
+  }
+
+  // ── Download archive from platform API ──────────────────────────────────
+  let zipDownloadStatus = $state<'idle' | 'downloading' | 'done' | 'error'>('idle');
+  let zipDownloadError = $state('');
+  let downloadFormat = $state<'zip' | 'tar.gz'>('zip');
+
+  async function handleDownloadRepoZip() {
+    if (!config.remote_url.trim()) { zipDownloadError = '请填写仓库地址'; zipDownloadStatus = 'error'; return; }
+    if (!config.branch.trim())     { zipDownloadError = '请填写分支名';   zipDownloadStatus = 'error'; return; }
+    if (!config.auth.token.trim()) { zipDownloadError = '请填写 Access Token'; zipDownloadStatus = 'error'; return; }
+    zipDownloadStatus = 'downloading';
+    zipDownloadError = '';
+    try {
+      const archivePath = await downloadZipFromRepo(
+        config.remote_url, config.branch, config.auth.token, config.platform ?? 'github', proxy, downloadFormat,
+      );
+      config.zip_path = archivePath;
+      zipDownloadStatus = 'done';
+      onchange?.();
+    } catch (e: unknown) {
+      zipDownloadStatus = 'error';
+      zipDownloadError = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
 <div class="repo-panel">
   <h2 class="panel-title">{label}</h2>
+
+  <!-- ZIP source toggle (Repo B only) -->
+  {#if showZipOption}
+    <label class="field zip-toggle-field">
+      <input
+        type="checkbox"
+        class="zip-checkbox"
+        bind:checked={config.use_zip}
+        onchange={onchange}
+      />
+      <span class="zip-toggle-label">使用 ZIP 包作为源（无法通过 git 获取时）</span>
+    </label>
+  {/if}
+
+  {#if showZipOption && config.use_zip}
+    <!-- Archive mode: show archive file path -->
+    <label class="field">
+      <span class="field-label">压缩包路径（.zip 或 .tar.gz）</span>
+      <div class="path-row">
+        <input
+          type="text"
+          bind:value={config.zip_path}
+          onchange={onchange}
+          placeholder="/path/to/repo.zip or repo.tar.gz"
+          class="input"
+        />
+        {#if isTauriCtx}
+          <!-- Tauri: native file-open dialog, returns full path directly -->
+          <button type="button" class="btn-browse" onclick={browseZipFile}>Browse</button>
+        {:else}
+          <!-- Web: upload selected file to local Node.js server, get server-side path back -->
+          <input
+            bind:this={zipFileInput}
+            type="file"
+            accept=".zip,.tar.gz,.tgz"
+            style="display:none"
+            onchange={onZipFileSelected}
+          />
+          <button
+            type="button"
+            class="btn-browse"
+            onclick={openZipPicker}
+            disabled={zipUploadStatus === 'uploading'}
+          >
+            {zipUploadStatus === 'uploading' ? '上传中…' : '选择文件'}
+          </button>
+        {/if}
+      </div>
+      {#if !isTauriCtx && zipUploadStatus === 'done' && config.zip_path}
+        <span class="zip-upload-ok">✓ 已上传：{config.zip_path.split(/[\\/]/).pop()}</span>
+      {/if}
+      {#if !isTauriCtx && zipUploadStatus === 'error'}
+        <span class="zip-upload-err">上传失败：{zipUploadError}</span>
+      {/if}
+    </label>
+    <p class="zip-note">
+      支持 <code>.zip</code> 和 <code>.tar.gz</code> 格式。选择后自动解压并同步到 Repo A。
+      解压时自动处理顶层包裹目录（如 <code>repo-main/</code>）。
+    </p>
+
+    <!-- Download from platform API -->
+    <details class="zip-dl-details">
+      <summary class="zip-dl-summary">从平台 API 下载 ZIP（可选）</summary>
+      <div class="zip-dl-body">
+        <!-- Platform -->
+        <label class="field">
+          <span class="field-label">平台</span>
+          <div class="platform-row">
+            {#each [
+              { value: 'github',  label: 'GitHub' },
+              { value: 'gitlab',  label: 'GitLab' },
+              { value: 'codeup',  label: 'Codeup' },
+            ] as p}
+              <button
+                type="button"
+                class="platform-btn"
+                class:selected={config.platform === p.value}
+                onclick={() => { config.platform = p.value; onchange?.(); }}
+              >{p.label}</button>
+            {/each}
+          </div>
+        </label>
+
+        <!-- Remote URL -->
+        <label class="field">
+          <span class="field-label">仓库地址</span>
+          <input
+            type="text"
+            bind:value={config.remote_url}
+            onchange={onchange}
+            placeholder={config.platform === 'codeup'
+              ? 'https://codeup.aliyun.com/org/repo.git'
+              : config.platform === 'gitlab'
+              ? 'https://gitlab.com/user/repo.git'
+              : 'https://github.com/user/repo.git'}
+            class="input"
+          />
+        </label>
+
+        <!-- Branch -->
+        <label class="field">
+          <span class="field-label">分支名</span>
+          <input
+            type="text"
+            bind:value={config.branch}
+            onchange={onchange}
+            placeholder="main"
+            class="input"
+          />
+        </label>
+
+        <!-- Token -->
+        <label class="field">
+          <span class="field-label">
+            {config.platform === 'codeup' ? 'Codeup 个人访问令牌' : config.platform === 'gitlab' ? 'GitLab Personal Access Token' : 'GitHub Personal Access Token'}
+          </span>
+          <input
+            type="password"
+            bind:value={config.auth.token}
+            onchange={onchange}
+            placeholder={config.platform === 'codeup' ? 'your-codeup-token' : config.platform === 'gitlab' ? 'glpat-xxxx' : 'ghp_xxxx'}
+            class="input"
+            autocomplete="off"
+          />
+        </label>
+        {#if config.platform === 'codeup'}
+          <p class="zip-note">Yunxiao → 个人中心 → 个人访问令牌（需要 read_repository 权限）。</p>
+        {:else if config.platform === 'gitlab'}
+          <p class="zip-note">GitLab → User Settings → Access Tokens（需要 read_repository 权限）。</p>
+        {:else}
+          <p class="zip-note">GitHub → Settings → Developer settings → Personal access tokens（需要 repo 权限）。</p>
+        {/if}
+
+        <!-- Format selector -->
+        <label class="field">
+          <span class="field-label">下载格式</span>
+          <div class="format-row">
+            {#each [{ value: 'zip', label: 'ZIP (.zip)' }, { value: 'tar.gz', label: 'Tarball (.tar.gz)' }] as f}
+              <button
+                type="button"
+                class="format-btn"
+                class:selected={downloadFormat === f.value}
+                onclick={() => { downloadFormat = f.value as 'zip' | 'tar.gz'; }}
+              >{f.label}</button>
+            {/each}
+          </div>
+        </label>
+
+        <button
+          type="button"
+          class="btn-download"
+          onclick={handleDownloadRepoZip}
+          disabled={zipDownloadStatus === 'downloading'}
+        >
+          {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载`}
+        </button>
+        {#if zipDownloadStatus === 'done' && config.zip_path}
+          <span class="zip-upload-ok">✓ 已下载：{config.zip_path.split(/[\\/]/).pop()}</span>
+        {/if}
+        {#if zipDownloadStatus === 'error'}
+          <span class="zip-upload-err">下载失败：{zipDownloadError}</span>
+        {/if}
+      </div>
+    </details>
+  {:else}
 
   <!-- Local Path -->
   <label class="field">
@@ -359,7 +594,7 @@
     {/if}
   </div>
 
-  <!-- Authentication -->
+  <!-- Authentication (git mode only) -->
   <details class="auth-details">
     <summary class="auth-summary">
       Authentication
@@ -451,6 +686,8 @@
       {/if}
     </div>
   </details>
+
+  {/if}<!-- end zip/git conditional -->
 </div>
 
 <style>
@@ -859,5 +1096,141 @@
     border-radius: 3px;
     font-size: 0.72rem;
     font-style: normal;
+  }
+
+  /* ── ZIP source toggle ───────────────────────────────────────────────────── */
+  .zip-toggle-field {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(121, 192, 255, 0.06);
+    border: 1px solid rgba(121, 192, 255, 0.25);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .zip-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .zip-toggle-label {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .zip-upload-ok {
+    font-size: 0.75rem;
+    color: #3fb950;
+  }
+
+  .zip-upload-err {
+    font-size: 0.75rem;
+    color: var(--error, #f85149);
+  }
+
+  .zip-note {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-style: italic;
+    line-height: 1.5;
+  }
+
+  .zip-note code {
+    font-family: var(--font-mono);
+    background: #0d1117;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.72rem;
+    font-style: normal;
+  }
+
+  /* ── ZIP download from platform ──────────────────────────────────────────── */
+  .zip-dl-details {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .zip-dl-summary {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .zip-dl-summary::-webkit-details-marker { display: none; }
+
+  .zip-dl-summary::before {
+    content: '▶';
+    font-size: 0.65rem;
+    transition: transform 0.15s;
+  }
+
+  .zip-dl-details[open] .zip-dl-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .zip-dl-body {
+    padding: 12px 14px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .btn-download {
+    margin-top: 4px;
+    padding: 7px 14px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    align-self: flex-start;
+  }
+
+  .btn-download:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-download:not(:disabled):hover { opacity: 0.85; }
+
+  .format-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .format-btn {
+    padding: 5px 12px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .format-btn.selected {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .format-btn:not(.selected):hover {
+    border-color: var(--text-secondary);
   }
 </style>

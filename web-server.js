@@ -6,6 +6,7 @@
 // Config is stored in the OS user-config directory (same location as the desktop app).
 
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -176,25 +177,27 @@ function runGit(dir, args, { env = process.env, logFn = null, displayArgs = null
     if (logFn) logFn('info', `$ git ${show.join(' ')}`);
 
     const proc = spawn('git', args, { cwd: dir, env, shell: false });
-    let stdout = '';
-    let stderr = '';
+    // Collect raw Buffers so multibyte UTF-8 sequences split across chunk
+    // boundaries are decoded correctly (chunk.toString() would corrupt them).
+    const stdoutChunks = [];
+    const stderrChunks = [];
 
     proc.stdout.on('data', chunk => {
-      const s = chunk.toString();
-      stdout += s;
+      stdoutChunks.push(chunk);
       if (logFn) {
-        s.split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
+        chunk.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
       }
     });
     proc.stderr.on('data', chunk => {
-      const s = chunk.toString();
-      stderr += s;
+      stderrChunks.push(chunk);
       if (logFn) {
-        s.split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
+        chunk.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => logFn('info', l));
       }
     });
     proc.on('error', err => reject(new Error(`Failed to spawn git: ${err.message}`)));
     proc.on('close', code => {
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -232,22 +235,62 @@ async function gitAddAll(localPath, logFn) {
   await runGit(localPath, ['add', '-A'], { logFn });
 }
 
+/**
+ * Decode a git-quoted path back to a UTF-8 string.
+ * When core.quotePath=true (git default), non-ASCII bytes in filenames are
+ * wrapped in double-quotes and escaped as octal sequences, e.g.:
+ *   "src/\344\270\255\346\226\207.txt"
+ * This function decodes both quoted (octal) and unquoted (plain UTF-8) forms.
+ */
+function decodeGitPath(s) {
+  if (!s || !s.startsWith('"') || !s.endsWith('"')) return s;
+  const inner = s.slice(1, -1);
+  const bytes = [];
+  let i = 0;
+  while (i < inner.length) {
+    if (inner[i] === '\\' && i + 1 < inner.length) {
+      // Octal escape: \XYZ (three octal digits)
+      if (i + 3 < inner.length &&
+          inner[i+1] >= '0' && inner[i+1] <= '7' &&
+          inner[i+2] >= '0' && inner[i+2] <= '7' &&
+          inner[i+3] >= '0' && inner[i+3] <= '7') {
+        bytes.push(parseInt(inner.slice(i + 1, i + 4), 8));
+        i += 4;
+      } else {
+        // Other C-style escapes: \n \t \\ \"
+        switch (inner[i + 1]) {
+          case 'n':  bytes.push(0x0A); break;
+          case 't':  bytes.push(0x09); break;
+          case '\\': bytes.push(0x5C); break;
+          case '"':  bytes.push(0x22); break;
+          default:   bytes.push(inner.charCodeAt(i)); i -= 1; break;
+        }
+        i += 2;
+      }
+    } else {
+      bytes.push(inner.charCodeAt(i));
+      i += 1;
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
 /** Parse `git diff --cached --name-status` output into FileChange objects. */
 function parseNameStatus(output) {
   return output.split('\n').filter(l => l.trim()).map(line => {
     const parts = line.split('\t');
     const status = parts[0] ?? '';
-    if (status.startsWith('R')) return { status: 'renamed', path: parts[2] ?? '', old_path: parts[1] ?? null };
-    if (status.startsWith('C')) return { status: 'copied',  path: parts[2] ?? '', old_path: parts[1] ?? null };
-    if (status === 'A') return { status: 'added',    path: parts[1] ?? '', old_path: null };
-    if (status === 'M') return { status: 'modified', path: parts[1] ?? '', old_path: null };
-    if (status === 'D') return { status: 'deleted',  path: parts[1] ?? '', old_path: null };
-    return { status: 'unknown', path: parts[1] ?? '', old_path: null };
+    if (status.startsWith('R')) return { status: 'renamed', path: decodeGitPath(parts[2] ?? ''), old_path: decodeGitPath(parts[1] ?? '') };
+    if (status.startsWith('C')) return { status: 'copied',  path: decodeGitPath(parts[2] ?? ''), old_path: decodeGitPath(parts[1] ?? '') };
+    if (status === 'A') return { status: 'added',    path: decodeGitPath(parts[1] ?? ''), old_path: null };
+    if (status === 'M') return { status: 'modified', path: decodeGitPath(parts[1] ?? ''), old_path: null };
+    if (status === 'D') return { status: 'deleted',  path: decodeGitPath(parts[1] ?? ''), old_path: null };
+    return { status: 'unknown', path: decodeGitPath(parts[1] ?? ''), old_path: null };
   });
 }
 
 async function getStagedFiles(localPath) {
-  const out = await runGit(localPath, ['diff', '--cached', '--name-status']);
+  const out = await runGit(localPath, ['-c', 'core.quotePath=false', 'diff', '--cached', '--name-status']);
   return parseNameStatus(out);
 }
 
@@ -343,6 +386,168 @@ async function checkoutAndPull(localPath, branch, remoteUrl, auth, proxy, platfo
   }
 }
 
+// ─── ZIP EXTRACTION ────────────────────────────────────────────────────────
+
+/**
+ * Extract a zip archive to a fresh temp directory using system tools.
+ * - Windows: PowerShell Expand-Archive (built-in on Windows 10+)
+ * - Linux/macOS: unzip
+ * Returns the temp directory path.
+ */
+function extractZip(zipPath, logFn) {
+  const tmpDir = path.join(os.tmpdir(), `sync-code-zip-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  if (logFn) {
+    logFn('info', `Extracting ZIP: ${zipPath}`);
+    logFn('info', `Temp dir: ${tmpDir}`);
+  }
+
+  return new Promise((resolve, reject) => {
+    let proc;
+    if (process.platform === 'win32') {
+      // PowerShell is available on all supported Windows versions
+      proc = spawn('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${tmpDir.replace(/'/g, "''")}' -Force`,
+      ], { stdio: 'pipe' });
+    } else {
+      proc = spawn('unzip', ['-o', zipPath, '-d', tmpDir], { stdio: 'pipe' });
+    }
+
+    let errOut = '';
+    proc.stderr?.on('data', chunk => { errOut += chunk.toString(); });
+    proc.stdout?.on('data', chunk => { errOut += chunk.toString(); }); // unzip uses stdout for errors too
+
+    proc.on('error', err => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+      reject(new Error(
+        process.platform === 'win32'
+          ? `PowerShell Expand-Archive failed: ${err.message}`
+          : `unzip not found: ${err.message}. Please install unzip.`,
+      ));
+    });
+
+    proc.on('close', code => {
+      // unzip exits 1 for warnings (still OK); PowerShell exits 0 on success
+      const ok = process.platform === 'win32' ? code === 0 : (code === 0 || code === 1);
+      if (ok) {
+        if (logFn) logFn('info', 'ZIP extracted successfully.');
+        resolve(tmpDir);
+      } else {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+        reject(new Error(`ZIP extraction failed (exit ${code}): ${errOut.trim()}`));
+      }
+    });
+  });
+}
+
+/**
+ * Extract a tar.gz (or .tgz) archive to a temp directory.
+ *
+ * On Windows, the built-in tar.exe (bsdtar) decodes non-ASCII filenames
+ * using the system ANSI code page (ACP, e.g. CP1252) rather than UTF-8,
+ * which garbles Chinese filenames.  We work around this by:
+ *   1. Trying Python 3's tarfile module first — it always uses UTF-8 and
+ *      writes filenames via the Windows Unicode API, so Chinese names are
+ *      preserved correctly.
+ *   2. Falling back to system tar with --hdrcharset=UTF-8 if Python is
+ *      not installed.
+ *
+ * On Linux/macOS, the locale is UTF-8 and system tar works correctly.
+ * Returns the temp directory path.
+ */
+function extractTarGz(archivePath, logFn) {
+  const tmpDir = path.join(os.tmpdir(), `sync-code-tar-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  if (logFn) {
+    logFn('info', `Extracting tar.gz: ${archivePath}`);
+    logFn('info', `Temp dir: ${tmpDir}`);
+  }
+
+  // Python one-liner: open the archive and extract to tmpDir.
+  // Uses tarfile which decodes header bytes as UTF-8 by default.
+  const PYTHON_SCRIPT =
+    'import tarfile,sys; tarfile.open(sys.argv[1],"r:gz").extractall(sys.argv[2])';
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    };
+
+    function runProc(cmd, args) {
+      const proc = spawn(cmd, args, { stdio: 'pipe', shell: false });
+      let errOut = '';
+      proc.stderr?.on('data', chunk => { errOut += chunk.toString('utf8'); });
+      proc.stdout?.on('data', chunk => { errOut += chunk.toString('utf8'); });
+      return { proc, getErr: () => errOut };
+    }
+
+    if (process.platform === 'win32') {
+      // ── Attempt 1: Python 3 ──────────────────────────────────────────────
+      const { proc: pyProc, getErr: getPyErr } = runProc('python', [
+        '-c', PYTHON_SCRIPT, archivePath, tmpDir,
+      ]);
+
+      pyProc.on('error', () => {
+        // Python not found — fall back to system tar with explicit charset.
+        if (logFn) logFn('info', 'Python not found, falling back to tar --hdrcharset=UTF-8');
+        const { proc: tarProc, getErr: getTarErr } = runProc('tar', [
+          '--hdrcharset=UTF-8', '-xzf', archivePath, '-C', tmpDir,
+        ]);
+        tarProc.on('error', err => {
+          cleanup();
+          reject(new Error(`tar not found: ${err.message}. Install tar (Windows 10+ includes it) or Python 3.`));
+        });
+        tarProc.on('close', code => {
+          if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
+          else { cleanup(); reject(new Error(`tar extraction failed (exit ${code}): ${getTarErr().trim()}`)); }
+        });
+      });
+
+      pyProc.on('close', code => {
+        if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
+        else { cleanup(); reject(new Error(`tar.gz extraction failed (exit ${code}): ${getPyErr().trim()}`)); }
+      });
+    } else {
+      // ── Linux / macOS: system tar with UTF-8 locale ─────────────────────
+      const { proc, getErr } = runProc('tar', ['-xzf', archivePath, '-C', tmpDir]);
+      proc.on('error', err => {
+        cleanup();
+        reject(new Error(`tar not found: ${err.message}. Please install tar.`));
+      });
+      proc.on('close', code => {
+        if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
+        else { cleanup(); reject(new Error(`tar extraction failed (exit ${code}): ${getErr().trim()}`)); }
+      });
+    }
+  });
+}
+
+/**
+ * Extract an archive file, auto-detecting format from extension.
+ * Supports .zip and .tar.gz / .tgz.
+ */
+function extractArchive(archivePath, logFn) {
+  if (archivePath.endsWith('.tar.gz') || archivePath.endsWith('.tgz')) {
+    return extractTarGz(archivePath, logFn);
+  }
+  return extractZip(archivePath, logFn);
+}
+
+/**
+ * If `dir` contains exactly one subdirectory (and nothing else),
+ * return that subdirectory — handles GitHub's wrapper dir (e.g. `repo-main/`).
+ */
+function findSingleTopDir(dir) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    if (entries.length === 1 && entries[0].isDirectory()) {
+      return path.join(dir, entries[0].name);
+    }
+  } catch { /* ok */ }
+  return null;
+}
+
 // ─── FILE MIRRORING ────────────────────────────────────────────────────────
 
 /** Recursively list all files under `dir`, relative to `dir`. Skips `.git/`. */
@@ -422,28 +627,63 @@ async function mirrorFiles(src, dst, logFn) {
 
 async function doSync(config, logFn) {
   const { repo_a, repo_b, proxy } = config;
+  const useZip = !!repo_b.use_zip;
 
-  logFn('info', 'Validating repositories…');
+  // ── Step 1: Validate ──────────────────────────────────────────────────────
+  logFn('info', '━━ Step 1/6 — Validating repositories ━━');
   validateRepo(repo_a.local_path);
-  validateRepo(repo_b.local_path);
+  if (useZip) {
+    const zip = repo_b.zip_path?.trim();
+    if (!zip) throw new Error('Repo B: ZIP 文件路径不能为空。');
+    if (!fs.existsSync(zip)) throw new Error(`ZIP file not found: ${zip}`);
+    logFn('info', `  ZIP source: ${zip}`);
+  } else {
+    validateRepo(repo_b.local_path);
+  }
 
-  logFn('info', 'Checking Repo A is clean…');
+  // ── Step 2: Check Repo A clean ────────────────────────────────────────────
+  logFn('info', '━━ Step 2/6 — Checking Repo A working tree ━━');
   if (await isDirty(repo_a.local_path)) {
     throw new Error('Repo A has uncommitted changes. Please commit or discard them before syncing.');
   }
+  logFn('info', '  Repo A working tree is clean.');
 
+  // ── Step 3: Pull Repo A ───────────────────────────────────────────────────
+  logFn('info', `━━ Step 3/6 — Pulling Repo A (${repo_a.local_path}@${repo_a.branch}) ━━`);
   if (repo_a.remote_url) {
-    logFn('info', 'Pulling Repo A…');
     await gitPull(repo_a, proxy, logFn);
+  } else {
+    logFn('info', '  No remote URL for Repo A — skipping pull.');
   }
 
-  logFn('info', 'Pulling Repo B…');
-  await gitPull(repo_b, proxy, logFn);
+  // ── Step 4: Pull Repo B  OR  extract zip ─────────────────────────────────
+  let srcPath;
+  let tmpDir = null;
+  if (useZip) {
+    logFn('info', '━━ Step 4/6 — Extracting Repo B ZIP ━━');
+    tmpDir = await extractArchive(repo_b.zip_path.trim(), logFn);
+    // Handle GitHub/GitLab wrapper directory (e.g. repo-main/ inside the zip)
+    const singleTop = findSingleTopDir(tmpDir);
+    srcPath = singleTop || tmpDir;
+    logFn('info', `  Using source directory: ${srcPath}`);
+  } else {
+    logFn('info', `━━ Step 4/6 — Pulling Repo B (${repo_b.local_path}@${repo_b.branch}) ━━`);
+    await gitPull(repo_b, proxy, logFn);
+    srcPath = repo_b.local_path;
+  }
 
-  logFn('info', 'Mirroring files Repo B → Repo A…');
-  await mirrorFiles(repo_b.local_path, repo_a.local_path, logFn);
+  // ── Step 5: Mirror B → A ─────────────────────────────────────────────────
+  logFn('info', '━━ Step 5/6 — Mirroring Repo B → Repo A ━━');
+  try {
+    await mirrorFiles(srcPath, repo_a.local_path, logFn);
+  } finally {
+    if (tmpDir) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  }
 
-  logFn('info', 'Staging changes in Repo A…');
+  // ── Step 6: Stage ─────────────────────────────────────────────────────────
+  logFn('info', '━━ Step 6/6 — Staging changes in Repo A ━━');
   await gitAddAll(repo_a.local_path, logFn);
   const staged = await getStagedFiles(repo_a.local_path);
   logFn('success', `Ready for review: ${staged.length} file change(s) staged.`);
@@ -524,6 +764,72 @@ function sendPlainError(res, message, code = 500) {
 
 let syncLocked = false;
 
+// ─── PLATFORM API DOWNLOAD ─────────────────────────────────────────────────
+
+/**
+ * Build archive download URL and auth header details for a given platform.
+ * @param {string} format  "zip" or "tar.gz" (default "zip")
+ */
+function buildArchiveApiUrl(remoteUrl, branch, platform, format = 'zip') {
+  const u = new URL(remoteUrl);
+  const projectPath = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
+  if (platform === 'github') {
+    const [owner, repo] = projectPath.split('/');
+    // GitHub uses separate endpoints: zipball vs tarball
+    const archiveType = format === 'tar.gz' ? 'tarball' : 'zipball';
+    return {
+      url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${archiveType}/${encodeURIComponent(branch)}`,
+      headerName: 'Authorization',
+      headerValue: '',  // filled in by caller
+      isGitHub: true,
+    };
+  } else {
+    // Codeup / GitLab: use format query parameter
+    const encodedPath = encodeURIComponent(projectPath);
+    return {
+      url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
+      headerName: 'PRIVATE-TOKEN',
+      headerValue: '',  // filled in by caller
+      isGitHub: false,
+    };
+  }
+}
+
+/** Download a URL to a Buffer, following up to 10 redirects. */
+function downloadBuffer(url, reqHeaders, redirectCount = 0) {
+  if (redirectCount > 10) return Promise.reject(new Error('Too many redirects'));
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const opts = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers: reqHeaders,
+    };
+    const req = mod.request(opts, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        resolve(downloadBuffer(res.headers.location, reqHeaders, redirectCount + 1));
+        return;
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${Buffer.concat(chunks).toString().slice(0, 300)}`)));
+        return;
+      }
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 /**
  * Dispatch API routes. Returns false when no route matched (→ fall through to static).
  * Returning anything else (including undefined) means the route was handled.
@@ -540,6 +846,62 @@ async function handleApiRoute(req, res, parsedUrl) {
     saveConfig(await readJsonBody(req));
     res.writeHead(204); res.end();
     return;
+  }
+
+  // ── ZIP upload (web mode: browser can't reveal full path, so we receive the file) ──
+  if (pathname === '/api/upload/zip' && method === 'POST') {
+    const rawName = req.headers['x-filename'];
+    const safeName = (rawName ? decodeURIComponent(rawName) : 'upload.zip')
+      .replace(/[^a-zA-Z0-9._\-]/g, '_');
+    const uploadDir = path.join(os.tmpdir(), 'sync-code-uploads');
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const savePath = path.join(uploadDir, `${Date.now()}-${safeName}`);
+
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(savePath);
+      req.pipe(out);
+      out.on('finish', resolve);
+      out.on('error', reject);
+      req.on('error', reject);
+    });
+
+    return sendJson(res, { path: savePath });
+  }
+
+  // ── Download repo ZIP from platform API ──────────────────────────────────
+  if (pathname === '/api/download/repo-zip' && method === 'POST') {
+    const { remote_url, branch, token, platform, format } = await readJsonBody(req);
+    if (!remote_url || !branch || !token) {
+      return sendPlainError(res, 'remote_url, branch, and token are required');
+    }
+    const fmt = format === 'tar.gz' ? 'tar.gz' : 'zip';
+    let apiInfo;
+    try {
+      apiInfo = buildArchiveApiUrl(remote_url.trim(), branch.trim(), platform || 'github', fmt);
+    } catch (e) {
+      return sendPlainError(res, `Invalid remote URL: ${e.message}`);
+    }
+    const reqHeaders = {};
+    if (apiInfo.isGitHub) {
+      reqHeaders['Authorization'] = `Bearer ${token}`;
+      reqHeaders['Accept'] = 'application/vnd.github+json';
+      reqHeaders['X-GitHub-Api-Version'] = '2022-11-28';
+      reqHeaders['User-Agent'] = 'sync-code/1.0';
+    } else {
+      reqHeaders['PRIVATE-TOKEN'] = token;
+    }
+    try {
+      const buf = await downloadBuffer(apiInfo.url, reqHeaders);
+      const ts = Date.now();
+      const tmpDir = path.join(os.tmpdir(), `sync-code-dl-${ts}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const filename = fmt === 'tar.gz' ? 'repo.tar.gz' : 'repo.zip';
+      const archivePath = path.join(tmpDir, filename);
+      fs.writeFileSync(archivePath, buf);
+      return sendJson(res, archivePath);
+    } catch (e) {
+      return sendPlainError(res, e.message);
+    }
   }
 
   // ── Sync: start (SSE stream) ─────────────────────────────────────────────

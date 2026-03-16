@@ -44,8 +44,12 @@
     const b = configStore.value.repo_b;
     if (!a.local_path.trim()) return 'Repo A: local path is required.';
     if (!a.branch.trim()) return 'Repo A: branch is required.';
-    if (!b.local_path.trim()) return 'Repo B: local path is required.';
-    if (!b.branch.trim()) return 'Repo B: branch is required.';
+    if (b.use_zip) {
+      if (!b.zip_path?.trim()) return 'Repo B: ZIP 文件路径不能为空。';
+    } else {
+      if (!b.local_path.trim()) return 'Repo B: local path is required.';
+      if (!b.branch.trim()) return 'Repo B: branch is required.';
+    }
     return null;
   }
 
@@ -71,7 +75,7 @@
     } catch (e: unknown) {
       syncedConfig = null;
       status = 'error';
-      errorMessage = typeof e === 'string' ? e : 'An unexpected error occurred.';
+      errorMessage = e instanceof Error ? e.message : typeof e === 'string' ? e : 'An unexpected error occurred.';
     }
   }
 
@@ -98,7 +102,7 @@
       syncedConfig = null;
     } catch (e: unknown) {
       status = 'error';
-      errorMessage = typeof e === 'string' ? e : 'Push failed.';
+      errorMessage = e instanceof Error ? e.message : typeof e === 'string' ? e : 'Push failed.';
     }
   }
 
@@ -137,6 +141,7 @@
         bind:config={configStore.value.repo_b}
         proxy={configStore.value.proxy}
         onchange={onConfigChange}
+        showZipOption={true}
       />
     </section>
 
