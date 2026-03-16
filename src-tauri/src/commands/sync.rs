@@ -92,12 +92,34 @@ fn extract_targz(archive_path_str: &str, log: &LogFn) -> Result<PathBuf> {
     Ok(tmp_dir)
 }
 
-/// Extract an archive (auto-detect zip vs tar.gz from extension).
-fn extract_archive(archive_path_str: &str, log: &LogFn) -> Result<PathBuf> {
-    if archive_path_str.ends_with(".tar.gz") || archive_path_str.ends_with(".tgz") {
-        extract_targz(archive_path_str, log)
+/// Detect archive format from magic bytes.
+/// Returns true if gzip (tar.gz), false if zip, or an error if neither.
+fn is_gzip_archive(path: &str) -> Result<bool> {
+    let mut f = fs::File::open(path)
+        .map_err(|e| AppError::Validation(format!("Cannot open archive: {e}")))?;
+    let mut header = [0u8; 4];
+    use std::io::Read as _;
+    let n = f.read(&mut header).unwrap_or(0);
+    if n >= 2 && header[0] == 0x1F && header[1] == 0x8B {
+        return Ok(true);   // gzip magic
+    }
+    if n >= 4 && header[0] == 0x50 && header[1] == 0x4B && header[2] == 0x03 && header[3] == 0x04 {
+        return Ok(false);  // zip magic
+    }
+    // Fall back to extension if magic bytes are inconclusive
+    if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
+        Ok(true)
     } else {
-        extract_zip(archive_path_str, log)
+        Ok(false)
+    }
+}
+
+/// Extract an archive — format detected from magic bytes (falls back to extension).
+fn extract_archive(archive_path_str: &str, log: &LogFn) -> Result<PathBuf> {
+    match is_gzip_archive(archive_path_str) {
+        Ok(true)  => extract_targz(archive_path_str, log),
+        Ok(false) => extract_zip(archive_path_str, log),
+        Err(e)    => Err(e),
     }
 }
 

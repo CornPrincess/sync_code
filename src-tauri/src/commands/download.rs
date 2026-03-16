@@ -159,5 +159,31 @@ pub async fn download_repo_zip(
         )));
     }
 
+    // Verify magic bytes — server may return a different format than requested
+    // (e.g. Codeup returns zip regardless of format param).
+    let header = std::fs::read(&out_path)
+        .map_err(|e| AppError::Git(format!("Cannot read downloaded file: {e}")))?;
+
+    let is_zip   = header.len() >= 4 && header[0] == 0x50 && header[1] == 0x4B
+                                     && header[2] == 0x03 && header[3] == 0x04;
+    let is_gzip  = header.len() >= 2 && header[0] == 0x1F && header[1] == 0x8B;
+
+    if !is_zip && !is_gzip {
+        let preview = String::from_utf8_lossy(&header[..header.len().min(300)]);
+        return Err(AppError::Git(format!(
+            "下载失败：服务器返回了非压缩包内容，请检查仓库地址、分支和 Token 是否正确。响应预览: {}",
+            preview.trim()
+        )));
+    }
+
+    // Rename file if the actual format differs from what was requested
+    let actual_filename = if is_gzip { "repo.tar.gz" } else { "repo.zip" };
+    if actual_filename != filename {
+        let corrected = tmp_dir.join(actual_filename);
+        std::fs::rename(&out_path, &corrected)
+            .map_err(|e| AppError::Git(format!("Cannot rename downloaded file: {e}")))?;
+        return Ok(corrected.to_string_lossy().into_owned());
+    }
+
     Ok(out_path.to_string_lossy().into_owned())
 }
