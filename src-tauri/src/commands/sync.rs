@@ -135,7 +135,7 @@ pub async fn start_sync(
     result
 }
 
-async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>> {
+pub async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>> {
     let path_a = PathBuf::from(&config.repo_a.local_path);
     let path_b = PathBuf::from(&config.repo_b.local_path);
     let proxy = &config.proxy;
@@ -184,7 +184,7 @@ async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>> {
     let log_clone = Arc::clone(log);
     let path_b_clone = path_b.clone();
     let path_a_clone = path_a.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         mirror_files(&log_clone, &path_b_clone, &path_a_clone)
     })
     .await
@@ -224,6 +224,15 @@ pub async fn commit_and_push(
     let log: LogFn = Arc::new(move |event: SyncEvent| {
         let _ = on_event.send(event);
     });
+    run_commit_and_push(&log, &config, commit_message, paths_to_stage).await
+}
+
+pub async fn run_commit_and_push(
+    log: &LogFn,
+    config: &AppConfig,
+    commit_message: String,
+    paths_to_stage: Vec<String>,
+) -> Result<()> {
     let path_a = PathBuf::from(&config.repo_a.local_path);
     let proxy = &config.proxy;
 
@@ -232,27 +241,27 @@ pub async fn commit_and_push(
     }
 
     // 1. Unstage all, then re-stage only the selected paths
-    emit_log(&log, SyncEvent::info("━━ Staging selected files ━━"));
-    stage_selected(&log, &path_a, &paths_to_stage, Some(&config.repo_a.auth), Some(proxy)).await?;
+    emit_log(log, SyncEvent::info("━━ Staging selected files ━━"));
+    stage_selected(log, &path_a, &paths_to_stage, Some(&config.repo_a.auth), Some(proxy)).await?;
 
     // 2. Commit (skips automatically if nothing is staged)
-    emit_log(&log, SyncEvent::info("━━ Committing ━━"));
+    emit_log(log, SyncEvent::info("━━ Committing ━━"));
     let msg = if commit_message.trim().is_empty() {
         format!("sync: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
     } else {
         commit_message
     };
-    git_commit(&log, &path_a, &msg, Some(&config.repo_a.auth), Some(proxy)).await?;
+    git_commit(log, &path_a, &msg, Some(&config.repo_a.auth), Some(proxy)).await?;
 
     // 3. Push
-    emit_log(&log, SyncEvent::info("━━ Pushing Repo A ━━"));
-    git_push_only(&log, &config.repo_a, proxy).await?;
+    emit_log(log, SyncEvent::info("━━ Pushing Repo A ━━"));
+    git_push_only(log, &config.repo_a, proxy).await?;
 
     // 4. Revert any remaining (unselected) working-tree changes
-    emit_log(&log, SyncEvent::info("Reverting unselected changes in Repo A…"));
+    emit_log(log, SyncEvent::info("Reverting unselected changes in Repo A…"));
     revert_remaining(&path_a).await?;
 
-    emit_log(&log, SyncEvent::success("Push completed successfully!"));
+    emit_log(log, SyncEvent::success("Push completed successfully!"));
     Ok(())
 }
 

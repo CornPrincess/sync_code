@@ -1,6 +1,6 @@
-mod commands;
-mod error;
-mod models;
+pub mod commands;
+pub mod error;
+pub mod models;
 
 use std::sync::{Arc, Mutex};
 
