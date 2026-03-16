@@ -30,7 +30,7 @@ function configDir() {
 }
 
 const DEFAULT_AUTH   = { auth_type: 'none', username: '', password: '', token: '', ssh_key_path: '' };
-const DEFAULT_REPO   = { local_path: '', remote_url: '', branch: '', auth: { ...DEFAULT_AUTH }, platform: 'github' };
+const DEFAULT_REPO   = { local_path: '', remote_url: '', branch: '', auth: { ...DEFAULT_AUTH }, platform: 'github', use_zip: false, zip_path: '', zip_source_mode: 'local' };
 const DEFAULT_PROXY  = { enabled: false, http_proxy: '', https_proxy: '', no_proxy: '' };
 
 function makeDefaultConfig() {
@@ -38,6 +38,8 @@ function makeDefaultConfig() {
     repo_a: { ...DEFAULT_REPO, auth: { ...DEFAULT_AUTH } },
     repo_b: { ...DEFAULT_REPO, auth: { ...DEFAULT_AUTH } },
     proxy: { ...DEFAULT_PROXY },
+    repo_a_presets: [],
+    repo_b_presets: [],
   };
 }
 
@@ -50,6 +52,8 @@ function loadConfig() {
       repo_a: { ...DEFAULT_REPO, ...raw.repo_a, auth: { ...DEFAULT_AUTH, ...(raw.repo_a?.auth ?? {}) } },
       repo_b: { ...DEFAULT_REPO, ...raw.repo_b, auth: { ...DEFAULT_AUTH, ...(raw.repo_b?.auth ?? {}) } },
       proxy:  { ...DEFAULT_PROXY, ...(raw.proxy ?? {}) },
+      repo_a_presets: raw.repo_a_presets ?? [],
+      repo_b_presets: raw.repo_b_presets ?? [],
     };
   } catch {
     return makeDefaultConfig();
@@ -524,10 +528,24 @@ function extractTarGz(archivePath, logFn) {
 }
 
 /**
- * Extract an archive file, auto-detecting format from extension.
+ * Extract an archive file.
+ * Format is detected from magic bytes first; falls back to file extension.
  * Supports .zip and .tar.gz / .tgz.
  */
 function extractArchive(archivePath, logFn) {
+  try {
+    const fd = fs.openSync(archivePath, 'r');
+    const header = Buffer.alloc(4);
+    const n = fs.readSync(fd, header, 0, 4, 0);
+    fs.closeSync(fd);
+    if (n >= 2 && header[0] === 0x1F && header[1] === 0x8B) {
+      return extractTarGz(archivePath, logFn); // gzip magic
+    }
+    if (n >= 4 && header[0] === 0x50 && header[1] === 0x4B) {
+      return extractZip(archivePath, logFn);   // ZIP magic
+    }
+  } catch { /* fall through to extension check */ }
+  // Fallback: use extension
   if (archivePath.endsWith('.tar.gz') || archivePath.endsWith('.tgz')) {
     return extractTarGz(archivePath, logFn);
   }
@@ -831,6 +849,22 @@ function downloadBuffer(url, reqHeaders, redirectCount = 0) {
 }
 
 /**
+ * Detect archive format from magic bytes.
+ * ZIP: PK\x03\x04 (50 4B 03 04)
+ * gzip/tar.gz: \x1f\x8b (1F 8B)
+ * Returns "zip", "tar.gz", or null if unrecognised.
+ */
+function detectArchiveFormat(buf) {
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04) {
+    return 'zip';
+  }
+  if (buf.length >= 2 && buf[0] === 0x1F && buf[1] === 0x8B) {
+    return 'tar.gz';
+  }
+  return null;
+}
+
+/**
  * Dispatch API routes. Returns false when no route matched (→ fall through to static).
  * Returning anything else (including undefined) means the route was handled.
  */
@@ -892,10 +926,17 @@ async function handleApiRoute(req, res, parsedUrl) {
     }
     try {
       const buf = await downloadBuffer(apiInfo.url, reqHeaders);
+      // Detect actual format from magic bytes — the server may return a different
+      // format than requested (e.g. Codeup defaults to zip regardless of format param).
+      const actualFmt = detectArchiveFormat(buf);
+      if (!actualFmt) {
+        const preview = buf.slice(0, 300).toString('utf8').replace(/\s+/g, ' ');
+        return sendPlainError(res, `下载失败：服务器返回了非压缩包内容，请检查仓库地址、分支和 Token 是否正确。响应预览: ${preview}`);
+      }
       const ts = Date.now();
       const tmpDir = path.join(os.tmpdir(), `sync-code-dl-${ts}`);
       fs.mkdirSync(tmpDir, { recursive: true });
-      const filename = fmt === 'tar.gz' ? 'repo.tar.gz' : 'repo.zip';
+      const filename = actualFmt === 'tar.gz' ? 'repo.tar.gz' : 'repo.zip';
       const archivePath = path.join(tmpDir, filename);
       fs.writeFileSync(archivePath, buf);
       return sendJson(res, archivePath);

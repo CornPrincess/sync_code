@@ -21,6 +21,8 @@ export interface RepoConfig {
   use_zip: boolean;
   /** Absolute path to the zip file when use_zip is true */
   zip_path: string;
+  /** "local" | "api" — which ZIP source tab is active (persisted for UX) */
+  zip_source_mode: string;
 }
 
 export interface ProxyConfig {
@@ -30,10 +32,18 @@ export interface ProxyConfig {
   no_proxy: string;
 }
 
+export interface RepoPreset {
+  id: string;
+  name: string;
+  config: RepoConfig;
+}
+
 export interface AppConfig {
   repo_a: RepoConfig;
   repo_b: RepoConfig;
   proxy: ProxyConfig;
+  repo_a_presets: RepoPreset[];
+  repo_b_presets: RepoPreset[];
 }
 
 export interface SyncEvent {
@@ -54,7 +64,7 @@ export function defaultAuthConfig(): AuthConfig {
 }
 
 export function defaultRepoConfig(): RepoConfig {
-  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github', use_zip: false, zip_path: '' };
+  return { local_path: '', remote_url: '', branch: '', auth: defaultAuthConfig(), platform: 'github', use_zip: false, zip_path: '', zip_source_mode: 'local' };
 }
 
 export function defaultProxyConfig(): ProxyConfig {
@@ -66,6 +76,8 @@ export function defaultAppConfig(): AppConfig {
     repo_a: defaultRepoConfig(),
     repo_b: defaultRepoConfig(),
     proxy: defaultProxyConfig(),
+    repo_a_presets: [],
+    repo_b_presets: [],
   };
 }
 

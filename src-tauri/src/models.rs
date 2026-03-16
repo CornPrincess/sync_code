@@ -50,10 +50,17 @@ pub struct RepoConfig {
     /// Absolute path to the zip file when use_zip is true
     #[serde(default)]
     pub zip_path: String,
+    /// "local" | "api" — which ZIP source tab is selected (frontend only, persisted for UX)
+    #[serde(default = "default_zip_source_mode")]
+    pub zip_source_mode: String,
 }
 
 fn default_platform() -> String {
     "github".into()
+}
+
+fn default_zip_source_mode() -> String {
+    "local".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,12 +72,25 @@ pub struct ProxyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RepoPreset {
+    pub id: String,
+    pub name: String,
+    pub config: RepoConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub repo_a: RepoConfig,
     pub repo_b: RepoConfig,
     /// Missing in old config files → deserialize as Default (disabled)
     #[serde(default)]
     pub proxy: ProxyConfig,
+    /// Saved presets for Repo A (target)
+    #[serde(default)]
+    pub repo_a_presets: Vec<RepoPreset>,
+    /// Saved presets for Repo B (source)
+    #[serde(default)]
+    pub repo_b_presets: Vec<RepoPreset>,
 }
 
 #[derive(Debug, Clone, Serialize)]

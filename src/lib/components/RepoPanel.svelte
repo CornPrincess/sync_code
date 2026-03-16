@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
-  import { isTauri, listBranches, refreshBranches, checkoutAndPull, downloadZipFromRepo, type BranchList, type RepoConfig, type ProxyConfig } from '../ipc.js';
+  import { isTauri, listBranches, refreshBranches, checkoutAndPull, downloadZipFromRepo, type BranchList, type RepoConfig, type RepoPreset, type ProxyConfig } from '../ipc.js';
 
   const isTauriCtx = isTauri();
 
@@ -8,12 +8,14 @@
     label,
     config = $bindable(),
     proxy,
+    presets = $bindable<RepoPreset[]>([]),
     onchange,
     showZipOption = false,
   }: {
     label: string;
     config: RepoConfig;
     proxy: ProxyConfig;
+    presets?: RepoPreset[];
     onchange?: () => void;
     /** If true, show a "Use ZIP file" toggle for this repo panel (Repo B only). */
     showZipOption?: boolean;
@@ -140,7 +142,7 @@
     config.branch = branch;
     focusedBranch = branch; // prevent onBranchBlur from triggering a duplicate checkout
     branchError = '';
-    if (!config.local_path) { onchange?.(); return; }
+    if (!config.local_path || config.use_zip) { onchange?.(); return; }
     checkingOut = true;
     try {
       await checkoutAndPull(config.local_path, branch, config.remote_url, config.auth, proxy, config.platform ?? 'github');
@@ -206,6 +208,52 @@
     input.value = '';
   }
 
+  // ── ZIP source mode — persisted in config.zip_source_mode ─────────────
+  const zipSourceMode = $derived<'local' | 'api'>(
+    (config.zip_source_mode === 'api') ? 'api' : 'local'
+  );
+  function setZipSourceMode(mode: 'local' | 'api') {
+    config.zip_source_mode = mode;
+    onchange?.();
+  }
+
+  // ── Preset management ──────────────────────────────────────────────────
+  let selectedPresetId = $state('');
+  let showSaveInput = $state(false);
+  let newPresetName = $state('');
+
+  function loadPreset() {
+    const preset = (presets ?? []).find(p => p.id === selectedPresetId);
+    if (preset) {
+      Object.assign(config, JSON.parse(JSON.stringify(preset.config)));
+      onchange?.();
+    }
+  }
+
+  function confirmSavePreset() {
+    const name = newPresetName.trim();
+    if (!name) return;
+    const id = Date.now().toString();
+    presets = [...(presets ?? []), { id, name, config: JSON.parse(JSON.stringify(config)) }];
+    selectedPresetId = id;
+    newPresetName = '';
+    showSaveInput = false;
+    onchange?.();
+  }
+
+  function updateCurrentPreset() {
+    presets = (presets ?? []).map(p =>
+      p.id === selectedPresetId ? { ...p, config: JSON.parse(JSON.stringify(config)) } : p
+    );
+    onchange?.();
+  }
+
+  function deleteCurrentPreset() {
+    presets = (presets ?? []).filter(p => p.id !== selectedPresetId);
+    selectedPresetId = '';
+    onchange?.();
+  }
+
   // ── Download archive from platform API ──────────────────────────────────
   let zipDownloadStatus = $state<'idle' | 'downloading' | 'done' | 'error'>('idle');
   let zipDownloadError = $state('');
@@ -232,6 +280,36 @@
 </script>
 
 <div class="repo-panel">
+  <!-- Preset selector -->
+  <div class="preset-bar">
+    <select class="preset-select" bind:value={selectedPresetId} onchange={loadPreset}>
+      <option value="">— 选择仓库配置 —</option>
+      {#each (presets ?? []) as p (p.id)}
+        <option value={p.id}>{p.name}</option>
+      {/each}
+    </select>
+    {#if showSaveInput}
+      <input
+        type="text"
+        class="preset-name-input"
+        bind:value={newPresetName}
+        placeholder="输入配置名称"
+        onkeydown={(e) => {
+          if (e.key === 'Enter') confirmSavePreset();
+          if (e.key === 'Escape') { showSaveInput = false; newPresetName = ''; }
+        }}
+      />
+      <button type="button" class="preset-btn preset-confirm" onclick={confirmSavePreset} title="确认保存">✓</button>
+      <button type="button" class="preset-btn preset-cancel" onclick={() => { showSaveInput = false; newPresetName = ''; }} title="取消">✕</button>
+    {:else}
+      <button type="button" class="preset-btn" onclick={() => { showSaveInput = true; newPresetName = ''; }} title="保存当前配置为新仓库配置">+ 保存</button>
+      {#if selectedPresetId}
+        <button type="button" class="preset-btn" onclick={updateCurrentPreset} title="更新当前仓库配置">更新</button>
+        <button type="button" class="preset-btn preset-delete" onclick={deleteCurrentPreset} title="删除此仓库配置">删除</button>
+      {/if}
+    {/if}
+  </div>
+
   <h2 class="panel-title">{label}</h2>
 
   <!-- ZIP source toggle (Repo B only) -->
@@ -248,155 +326,299 @@
   {/if}
 
   {#if showZipOption && config.use_zip}
-    <!-- Archive mode: show archive file path -->
-    <label class="field">
-      <span class="field-label">压缩包路径（.zip 或 .tar.gz）</span>
-      <div class="path-row">
-        <input
-          type="text"
-          bind:value={config.zip_path}
-          onchange={onchange}
-          placeholder="/path/to/repo.zip or repo.tar.gz"
-          class="input"
-        />
-        {#if isTauriCtx}
-          <!-- Tauri: native file-open dialog, returns full path directly -->
-          <button type="button" class="btn-browse" onclick={browseZipFile}>Browse</button>
-        {:else}
-          <!-- Web: upload selected file to local Node.js server, get server-side path back -->
-          <input
-            bind:this={zipFileInput}
-            type="file"
-            accept=".zip,.tar.gz,.tgz"
-            style="display:none"
-            onchange={onZipFileSelected}
-          />
-          <button
-            type="button"
-            class="btn-browse"
-            onclick={openZipPicker}
-            disabled={zipUploadStatus === 'uploading'}
-          >
-            {zipUploadStatus === 'uploading' ? '上传中…' : '选择文件'}
-          </button>
-        {/if}
-      </div>
-      {#if !isTauriCtx && zipUploadStatus === 'done' && config.zip_path}
-        <span class="zip-upload-ok">✓ 已上传：{config.zip_path.split(/[\\/]/).pop()}</span>
-      {/if}
-      {#if !isTauriCtx && zipUploadStatus === 'error'}
-        <span class="zip-upload-err">上传失败：{zipUploadError}</span>
-      {/if}
-    </label>
-    <p class="zip-note">
-      支持 <code>.zip</code> 和 <code>.tar.gz</code> 格式。选择后自动解压并同步到 Repo A。
-      解压时自动处理顶层包裹目录（如 <code>repo-main/</code>）。
-    </p>
+    <!-- ZIP source mode tabs -->
+    <div class="zip-source-tabs">
+      <button
+        type="button"
+        class="zip-tab-btn"
+        class:selected={zipSourceMode === 'local'}
+        onclick={() => setZipSourceMode('local')}
+      >本地文件</button>
+      <button
+        type="button"
+        class="zip-tab-btn"
+        class:selected={zipSourceMode === 'api'}
+        onclick={() => setZipSourceMode('api')}
+      >从平台 API 下载</button>
+    </div>
 
-    <!-- Download from platform API -->
-    <details class="zip-dl-details">
-      <summary class="zip-dl-summary">从平台 API 下载 ZIP（可选）</summary>
-      <div class="zip-dl-body">
-        <!-- Platform -->
-        <label class="field">
-          <span class="field-label">平台</span>
-          <div class="platform-row">
-            {#each [
-              { value: 'github',  label: 'GitHub' },
-              { value: 'gitlab',  label: 'GitLab' },
-              { value: 'codeup',  label: 'Codeup' },
-            ] as p}
-              <button
-                type="button"
-                class="platform-btn"
-                class:selected={config.platform === p.value}
-                onclick={() => { config.platform = p.value; onchange?.(); }}
-              >{p.label}</button>
-            {/each}
-          </div>
-        </label>
-
-        <!-- Remote URL -->
-        <label class="field">
-          <span class="field-label">仓库地址</span>
+    {#if zipSourceMode === 'local'}
+      <!-- Archive mode: local file path -->
+      <label class="field">
+        <span class="field-label">压缩包路径（.zip 或 .tar.gz）</span>
+        <div class="path-row">
           <input
             type="text"
-            bind:value={config.remote_url}
+            bind:value={config.zip_path}
             onchange={onchange}
-            placeholder={config.platform === 'codeup'
-              ? 'https://codeup.aliyun.com/org/repo.git'
-              : config.platform === 'gitlab'
-              ? 'https://gitlab.com/user/repo.git'
-              : 'https://github.com/user/repo.git'}
+            placeholder="/path/to/repo.zip or repo.tar.gz"
             class="input"
           />
-        </label>
+          {#if isTauriCtx}
+            <button type="button" class="btn-browse" onclick={browseZipFile}>Browse</button>
+          {:else}
+            <input
+              bind:this={zipFileInput}
+              type="file"
+              accept=".zip,.tar.gz,.tgz"
+              style="display:none"
+              onchange={onZipFileSelected}
+            />
+            <button
+              type="button"
+              class="btn-browse"
+              onclick={openZipPicker}
+              disabled={zipUploadStatus === 'uploading'}
+            >
+              {zipUploadStatus === 'uploading' ? '上传中…' : '选择文件'}
+            </button>
+          {/if}
+        </div>
+        {#if !isTauriCtx && zipUploadStatus === 'done' && config.zip_path}
+          <span class="zip-upload-ok">✓ 已上传：{config.zip_path.split(/[\\/]/).pop()}</span>
+        {/if}
+        {#if !isTauriCtx && zipUploadStatus === 'error'}
+          <span class="zip-upload-err">上传失败：{zipUploadError}</span>
+        {/if}
+      </label>
+      <p class="zip-note">
+        支持 <code>.zip</code> 和 <code>.tar.gz</code> 格式。选择后自动解压并同步到 Repo A。
+        解压时自动处理顶层包裹目录（如 <code>repo-main/</code>）。
+      </p>
+    {:else}
+      <!-- Platform API download mode -->
+      <label class="field">
+        <span class="field-label">平台</span>
+        <div class="platform-row">
+          {#each [
+            { value: 'github', label: 'GitHub',        logo: 'github' },
+            { value: 'gitlab', label: 'GitLab',        logo: 'gitlab' },
+            { value: 'codeup', label: 'Codeup (阿里云)', logo: 'codeup' },
+          ] as p}
+            <button
+              type="button"
+              class="platform-btn"
+              class:selected={config.platform === p.value}
+              onclick={() => { config.platform = p.value; onchange?.(); }}
+            >
+              {#if p.logo === 'github'}
+                <svg class="platform-icon" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                </svg>
+              {:else if p.logo === 'gitlab'}
+                <svg class="platform-icon" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M15.97 9.058l-.895-2.756L13.3.842a.37.37 0 00-.702 0L10.821 6.3H5.18L3.403.842a.37.37 0 00-.702 0L.925 6.302.03 9.058a.693.693 0 00.252.775L8 15.233l7.718-5.4a.693.693 0 00.252-.775"/>
+                </svg>
+              {:else}
+                <svg class="platform-icon" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 1a7 7 0 100 14A7 7 0 008 1zM0 8a8 8 0 1116 0A8 8 0 010 8z"/>
+                  <path d="M5.5 6.5A1.5 1.5 0 017 5h2a1.5 1.5 0 011.5 1.5v.5H7.5V6.5a.5.5 0 00-.5-.5H7a.5.5 0 00-.5.5V7H5.5v-.5zM5 8h6v1.5A1.5 1.5 0 019.5 11h-3A1.5 1.5 0 015 9.5V8z"/>
+                </svg>
+              {/if}
+              <span>{p.label}</span>
+            </button>
+          {/each}
+        </div>
+      </label>
 
-        <!-- Branch -->
-        <label class="field">
-          <span class="field-label">分支名</span>
+      <!-- Remote URL -->
+      <label class="field">
+        <span class="field-label">仓库地址</span>
+        <input
+          type="text"
+          bind:value={config.remote_url}
+          onchange={onchange}
+          placeholder={config.platform === 'codeup'
+            ? 'https://codeup.aliyun.com/org/repo.git'
+            : config.platform === 'gitlab'
+            ? 'https://gitlab.com/user/repo.git'
+            : 'https://github.com/user/repo.git'}
+          class="input"
+        />
+      </label>
+
+      <!-- Branch combobox (same design as git mode) -->
+      <div class="field">
+        <span class="field-label">
+          分支
+          {#if loadingBranches}
+            <span class="branch-hint">loading…</span>
+          {:else if refreshingBranches}
+            <span class="branch-hint">refreshing…</span>
+          {:else if checkingOut}
+            <span class="branch-hint">checking out…</span>
+          {:else if branchList.local.length + branchList.remote.length > 0}
+            <span class="branch-count">
+              {branchList.local.length}L · {branchList.remote.length}R
+            </span>
+          {/if}
+        </span>
+        <div class="branch-wrap">
           <input
             type="text"
             bind:value={config.branch}
-            onchange={onchange}
+            onfocus={onBranchFocus}
+            oninput={onBranchInput}
+            onkeydown={onBranchKeydown}
+            onblur={onBranchBlur}
             placeholder="main"
-            class="input"
-          />
-        </label>
-
-        <!-- Token -->
-        <label class="field">
-          <span class="field-label">
-            {config.platform === 'codeup' ? 'Codeup 个人访问令牌' : config.platform === 'gitlab' ? 'GitLab Personal Access Token' : 'GitHub Personal Access Token'}
-          </span>
-          <input
-            type="password"
-            bind:value={config.auth.token}
-            onchange={onchange}
-            placeholder={config.platform === 'codeup' ? 'your-codeup-token' : config.platform === 'gitlab' ? 'glpat-xxxx' : 'ghp_xxxx'}
-            class="input"
+            class="input branch-input"
+            class:input-error={!!branchError}
             autocomplete="off"
+            spellcheck="false"
           />
-        </label>
-        {#if config.platform === 'codeup'}
-          <p class="zip-note">Yunxiao → 个人中心 → 个人访问令牌（需要 read_repository 权限）。</p>
-        {:else if config.platform === 'gitlab'}
-          <p class="zip-note">GitLab → User Settings → Access Tokens（需要 read_repository 权限）。</p>
-        {:else}
-          <p class="zip-note">GitHub → Settings → Developer settings → Personal access tokens（需要 repo 权限）。</p>
-        {/if}
-
-        <!-- Format selector -->
-        <label class="field">
-          <span class="field-label">下载格式</span>
-          <div class="format-row">
-            {#each [{ value: 'zip', label: 'ZIP (.zip)' }, { value: 'tar.gz', label: 'Tarball (.tar.gz)' }] as f}
-              <button
-                type="button"
-                class="format-btn"
-                class:selected={downloadFormat === f.value}
-                onclick={() => { downloadFormat = f.value as 'zip' | 'tar.gz'; }}
-              >{f.label}</button>
-            {/each}
-          </div>
-        </label>
-
-        <button
-          type="button"
-          class="btn-download"
-          onclick={handleDownloadRepoZip}
-          disabled={zipDownloadStatus === 'downloading'}
-        >
-          {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载`}
-        </button>
-        {#if zipDownloadStatus === 'done' && config.zip_path}
-          <span class="zip-upload-ok">✓ 已下载：{config.zip_path.split(/[\\/]/).pop()}</span>
-        {/if}
-        {#if zipDownloadStatus === 'error'}
-          <span class="zip-upload-err">下载失败：{zipDownloadError}</span>
+          <button
+            type="button"
+            class="branch-arrow"
+            class:open={dropdownOpen}
+            onmousedown={toggleDropdown}
+            tabindex="-1"
+            aria-label="Toggle branch list"
+          >
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
+              <path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          {#if dropdownOpen}
+            <div class="branch-dropdown">
+              <div class="branch-toolbar">
+                <button
+                  type="button"
+                  class="branch-refresh-btn"
+                  class:spinning={refreshingBranches}
+                  onmousedown={(e) => { e.preventDefault(); doRefreshBranches(); }}
+                  disabled={refreshingBranches}
+                  title="Fetch remote branches"
+                >
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                    <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+                  </svg>
+                  {refreshingBranches ? 'Refreshing…' : 'Refresh remote'}
+                </button>
+              </div>
+              {#if loadingBranches}
+                <div class="branch-loading-row">Loading…</div>
+              {:else if totalCount === 0}
+                <div class="branch-empty">No branches found — type a branch name or click Refresh</div>
+              {:else}
+                {#if filteredLocal.length > 0}
+                  <div class="branch-section-header">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M11.75 2.5a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0zm.75 2.25a2.25 2.25 0 1 1-1.5-2.122V6A2.5 2.5 0 0 1 8.5 8.5H5.06a2.25 2.25 0 1 1 0-1.5H8.5A1 1 0 0 0 9.5 6V4.628A2.25 2.25 0 0 1 12.5 4.75zM4.25 13.5a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0zm.75-2.25a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5z"/>
+                    </svg>
+                    LOCAL BRANCHES
+                  </div>
+                  {#each filteredLocal as b, i}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div
+                      class="branch-option"
+                      class:active={i === activeIdx}
+                      class:current={b === config.branch}
+                      onmousedown={() => selectBranch(b)}
+                    >
+                      <span class="branch-icon">⎇</span>
+                      <span class="branch-name">{b}</span>
+                      {#if b === config.branch}
+                        <span class="branch-current-mark">✓</span>
+                      {/if}
+                    </div>
+                  {/each}
+                {/if}
+                {#if filteredRemote.length > 0}
+                  {#if filteredLocal.length > 0}
+                    <div class="branch-divider"></div>
+                  {/if}
+                  <div class="branch-section-header remote-header">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 0C3.58 0 0 3.58 0 8c0 4.42 3.58 8 8 8s8-3.58 8-8c0-4.42-3.58-8-8-8zm3.67 10.17c-.28.28-.66.44-1.06.44H9.5v1.25a.75.75 0 0 1-1.5 0V10.5H5.39a1.5 1.5 0 0 1-1.06-2.56L7.47 4.8a.75.75 0 0 1 1.06 0l3.14 3.14c.28.29.44.67.44 1.07 0 .4-.16.78-.44 1.06z"/>
+                    </svg>
+                    REMOTE BRANCHES
+                  </div>
+                  {#each filteredRemote as b, i}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div
+                      class="branch-option remote"
+                      class:active={filteredLocal.length + i === activeIdx}
+                      onmousedown={() => selectBranch(b)}
+                    >
+                      <span class="branch-icon remote-icon">⇅</span>
+                      <span class="branch-name">{b}</span>
+                    </div>
+                  {/each}
+                {/if}
+              {/if}
+            </div>
+          {/if}
+        </div>
+        {#if branchError}
+          <span class="branch-error">{branchError}</span>
         {/if}
       </div>
-    </details>
+
+      <!-- Token -->
+      <label class="field">
+        <span class="field-label">
+          {config.platform === 'codeup' ? 'Codeup 个人访问令牌' : config.platform === 'gitlab' ? 'GitLab Personal Access Token' : 'GitHub Personal Access Token'}
+        </span>
+        <input
+          type="password"
+          bind:value={config.auth.token}
+          onchange={onchange}
+          placeholder={config.platform === 'codeup' ? 'your-codeup-token' : config.platform === 'gitlab' ? 'glpat-xxxx' : 'ghp_xxxx'}
+          class="input"
+          autocomplete="off"
+        />
+      </label>
+      {#if config.platform === 'codeup'}
+        <p class="zip-note">Yunxiao → 个人中心 → 个人访问令牌（需要 read_repository 权限）。</p>
+      {:else if config.platform === 'gitlab'}
+        <p class="zip-note">GitLab → User Settings → Access Tokens（需要 read_repository 权限）。</p>
+      {:else}
+        <p class="zip-note">GitHub → Settings → Developer settings → Personal access tokens（需要 repo 权限）。</p>
+      {/if}
+
+      <!-- Format selector -->
+      <label class="field">
+        <span class="field-label">下载格式</span>
+        <div class="format-row">
+          {#each [{ value: 'zip', label: 'ZIP (.zip)' }, { value: 'tar.gz', label: 'Tarball (.tar.gz)' }] as f}
+            <button
+              type="button"
+              class="format-btn"
+              class:selected={downloadFormat === f.value}
+              onclick={() => { downloadFormat = f.value as 'zip' | 'tar.gz'; }}
+            >{f.label}</button>
+          {/each}
+        </div>
+      </label>
+
+      <button
+        type="button"
+        class="btn-download"
+        onclick={handleDownloadRepoZip}
+        disabled={zipDownloadStatus === 'downloading'}
+      >
+        {zipDownloadStatus === 'downloading' ? '下载中…' : `从 ${config.platform === 'github' ? 'GitHub' : config.platform === 'gitlab' ? 'GitLab' : 'Codeup'} 下载`}
+      </button>
+      <!-- Read-only display of the downloaded archive path -->
+      <label class="field" style="margin-top: 8px;">
+        <span class="field-label">已下载的压缩包路径</span>
+        <input
+          type="text"
+          class="input zip-path-readonly"
+          value={config.zip_path || ''}
+          disabled
+          placeholder="点击上方「下载」按钮后自动填入"
+        />
+      </label>
+      {#if zipDownloadStatus === 'done' && config.zip_path}
+        <span class="zip-upload-ok">✓ 已下载：{config.zip_path.split(/[\\/]/).pop()}</span>
+      {/if}
+      {#if zipDownloadStatus === 'error'}
+        <span class="zip-upload-err">下载失败：{zipDownloadError}</span>
+      {/if}
+    {/if}
   {:else}
 
   <!-- Local Path -->
@@ -1129,6 +1351,12 @@
     color: #3fb950;
   }
 
+  .zip-path-readonly {
+    opacity: 0.55;
+    cursor: default;
+    font-size: 0.78rem;
+  }
+
   .zip-upload-err {
     font-size: 0.75rem;
     color: var(--error, #f85149);
@@ -1232,5 +1460,112 @@
 
   .format-btn:not(.selected):hover {
     border-color: var(--text-secondary);
+  }
+
+  /* ── Preset bar ──────────────────────────────────────────────────────── */
+  .preset-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 7px 8px;
+    background: rgba(13, 17, 23, 0.5);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  .preset-select {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    appearance: auto;
+  }
+
+  .preset-select:focus { outline: none; border-color: var(--accent); }
+
+  .preset-name-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+  }
+
+  .preset-name-input:focus { outline: none; border-color: var(--accent); }
+
+  .preset-btn {
+    padding: 3px 10px;
+    background: var(--btn-secondary-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: border-color 0.12s, color 0.12s, background 0.12s;
+  }
+
+  .preset-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+    background: rgba(35, 134, 54, 0.1);
+  }
+
+  .preset-confirm {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .preset-confirm:hover { background: rgba(35, 134, 54, 0.2); }
+
+  .preset-delete:hover {
+    border-color: var(--color-error);
+    color: var(--color-error);
+    background: rgba(248, 81, 73, 0.1);
+  }
+
+  /* ── ZIP source tabs ─────────────────────────────────────────────────── */
+  .zip-source-tabs {
+    display: flex;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .zip-tab-btn {
+    flex: 1;
+    padding: 7px 12px;
+    background: var(--input-bg);
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .zip-tab-btn:last-child { border-right: none; }
+
+  .zip-tab-btn:hover:not(.selected) {
+    background: var(--btn-secondary-hover);
+    color: var(--text-primary);
+  }
+
+  .zip-tab-btn.selected {
+    background: rgba(35, 134, 54, 0.12);
+    color: var(--accent-hover);
+    font-weight: 600;
   }
 </style>
