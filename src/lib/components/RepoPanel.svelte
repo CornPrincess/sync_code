@@ -1379,47 +1379,6 @@
     font-style: normal;
   }
 
-  /* ── ZIP download from platform ──────────────────────────────────────────── */
-  .zip-dl-details {
-    margin-top: 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-
-  .zip-dl-summary {
-    padding: 8px 12px;
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    cursor: pointer;
-    user-select: none;
-    list-style: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .zip-dl-summary::-webkit-details-marker { display: none; }
-
-  .zip-dl-summary::before {
-    content: '▶';
-    font-size: 0.65rem;
-    transition: transform 0.15s;
-  }
-
-  .zip-dl-details[open] .zip-dl-summary::before {
-    transform: rotate(90deg);
-  }
-
-  .zip-dl-body {
-    padding: 12px 14px 14px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
   .btn-download {
     margin-top: 4px;
     padding: 7px 14px;

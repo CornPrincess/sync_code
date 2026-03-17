@@ -87,7 +87,7 @@ export function defaultAppConfig(): AppConfig {
 
 /** Returns true when running inside a Tauri desktop window. */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && !!(window as Record<string, unknown>).__TAURI_INTERNALS__;
+  return typeof window !== 'undefined' && !!(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
 }
 
 // ---------------------------------------------------------------------------
