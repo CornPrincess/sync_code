@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use commands::{
     config::{load_config, save_config},
     download::download_repo_zip,
-    git::{checkout_and_pull, checkout_branch, list_branches, refresh_branches},
+    git::{checkout_and_pull, checkout_branch, get_file_diff, list_branches, refresh_branches},
     sync::{commit_and_push, discard_sync, start_sync},
 };
 
@@ -27,6 +27,7 @@ pub fn run() {
             commit_and_push,
             discard_sync,
             download_repo_zip,
+            get_file_diff,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

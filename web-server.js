@@ -1008,6 +1008,21 @@ async function handleApiRoute(req, res, parsedUrl) {
   }
 
   // ── Branches: list ───────────────────────────────────────────────────────
+  // ── Staged diff for a single file ────────────────────────────────────────
+  if (pathname === '/api/git/diff' && method === 'GET') {
+    const localPath = parsedUrl.searchParams.get('local_path') || '';
+    const filePath  = parsedUrl.searchParams.get('file_path')  || '';
+    if (!localPath || !filePath) return sendPlainError(res, 'local_path and file_path are required');
+    try {
+      const out = await runGit(localPath, ['-c', 'core.quotePath=false', 'diff', '--cached', '--', filePath]);
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(out);
+    } catch (e) {
+      return sendPlainError(res, e.message);
+    }
+    return;
+  }
+
   if (pathname === '/api/branches' && method === 'GET') {
     const localPath = parsedUrl.searchParams.get('path') || '';
     if (!localPath) return sendJson(res, { local: [], remote: [] });

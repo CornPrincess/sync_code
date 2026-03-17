@@ -14,9 +14,13 @@
   let {
     files = [],
     selected = $bindable(new Set<string>()),
+    activeFile = null,
+    onfileclick,
   }: {
     files: FileChange[];
     selected: Set<string>;
+    activeFile?: string | null;
+    onfileclick?: (file: FileChange) => void;
   } = $props();
 
   // ── Tree construction ──────────────────────────────────────────────────────
@@ -202,15 +206,22 @@
       {/each}
     {/if}
   {:else if node.file}
+    {@const isActive = activeFile === node.fullPath}
     <div
       class="tree-row file-row file-{node.file.status}"
+      class:file-active={isActive}
       style:padding-left="{depth * 18 + 6}px"
+      role="button"
+      tabindex="0"
+      onclick={() => onfileclick?.(node.file!)}
+      onkeydown={(e) => e.key === 'Enter' && onfileclick?.(node.file!)}
     >
       <label class="cb-wrap">
         <input
           type="checkbox"
           checked={selected.has(node.fullPath)}
           onchange={() => toggleFile(node.fullPath)}
+          onclick={(e) => e.stopPropagation()}
           class="cb"
         />
       </label>
@@ -275,6 +286,9 @@
   }
 
   .tree-row:hover { background: rgba(255,255,255,0.04); }
+  .file-row { cursor: pointer; }
+  .file-active { background: rgba(35, 134, 54, 0.15) !important; }
+  .file-active:hover { background: rgba(35, 134, 54, 0.22) !important; }
 
   /* Checkbox — hide native, draw custom */
   .cb-wrap {

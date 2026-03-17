@@ -290,3 +290,11 @@ export async function checkoutAndPull(
     platform,
   });
 }
+
+/** Fetch the staged diff for a single file. Returns unified-diff text. */
+export async function getFileDiff(localPath: string, filePath: string): Promise<string> {
+  if (isTauri()) return invoke<string>('get_file_diff', { localPath, filePath });
+  const res = await fetch(`/api/git/diff?local_path=${encodeURIComponent(localPath)}&file_path=${encodeURIComponent(filePath)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.text();
+}
