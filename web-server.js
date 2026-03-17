@@ -801,8 +801,19 @@ function buildArchiveApiUrl(remoteUrl, branch, platform, format = 'zip') {
       headerValue: '',  // filled in by caller
       isGitHub: true,
     };
+  } else if (platform === 'codeup') {
+    // Codeup (Yunxiao/阿里云): send both PRIVATE-TOKEN (GitLab-compatible PAT) and
+    // x-yunxiao-token (OAPI PAT) — server honours whichever token type the user has.
+    const encodedPath = encodeURIComponent(projectPath);
+    return {
+      url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
+      headerName: null,       // handled via extraHeaders
+      extraHeaders: { 'PRIVATE-TOKEN': '', 'x-yunxiao-token': '' },  // values filled by caller
+      isGitHub: false,
+      isCodeup: true,
+    };
   } else {
-    // Codeup / GitLab: use format query parameter
+    // GitLab: use format query parameter
     const encodedPath = encodeURIComponent(projectPath);
     return {
       url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
@@ -921,8 +932,12 @@ async function handleApiRoute(req, res, parsedUrl) {
       reqHeaders['Accept'] = 'application/vnd.github+json';
       reqHeaders['X-GitHub-Api-Version'] = '2022-11-28';
       reqHeaders['User-Agent'] = 'sync-code/1.0';
-    } else {
+    } else if (apiInfo.isCodeup) {
+      // Codeup: send both auth header variants — server accepts whichever token type
       reqHeaders['PRIVATE-TOKEN'] = token;
+      reqHeaders['x-yunxiao-token'] = token;
+    } else {
+      reqHeaders[apiInfo.headerName] = token;
     }
     try {
       const buf = await downloadBuffer(apiInfo.url, reqHeaders);
@@ -993,6 +1008,21 @@ async function handleApiRoute(req, res, parsedUrl) {
   }
 
   // ── Branches: list ───────────────────────────────────────────────────────
+  // ── Staged diff for a single file ────────────────────────────────────────
+  if (pathname === '/api/git/diff' && method === 'GET') {
+    const localPath = parsedUrl.searchParams.get('local_path') || '';
+    const filePath  = parsedUrl.searchParams.get('file_path')  || '';
+    if (!localPath || !filePath) return sendPlainError(res, 'local_path and file_path are required');
+    try {
+      const out = await runGit(localPath, ['-c', 'core.quotePath=false', 'diff', '--cached', '--', filePath]);
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(out);
+    } catch (e) {
+      return sendPlainError(res, e.message);
+    }
+    return;
+  }
+
   if (pathname === '/api/branches' && method === 'GET') {
     const localPath = parsedUrl.searchParams.get('path') || '';
     if (!localPath) return sendJson(res, { local: [], remote: [] });

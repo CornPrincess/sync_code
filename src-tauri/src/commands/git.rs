@@ -613,6 +613,20 @@ fn decode_git_path(s: &str) -> String {
     String::from_utf8(bytes).unwrap_or_else(|_| s.to_string())
 }
 
+/// Return the staged diff for a single file (`git diff --cached -- <path>`).
+/// Returns an empty string for newly-added binary files or if nothing is staged.
+#[tauri::command]
+pub async fn get_file_diff(local_path: String, file_path: String) -> Result<String> {
+    let path = Path::new(&local_path);
+    let out = Command::new("git")
+        .args(["-c", "core.quotePath=false", "diff", "--cached", "--", &file_path])
+        .current_dir(path)
+        .output()
+        .await
+        .map_err(|e| AppError::Git(format!("git diff failed: {e}")))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Parse `git diff --cached --name-status` output into `FileChange` objects.
 fn parse_name_status(output: &str) -> Vec<FileChange> {
     let mut files = Vec::new();

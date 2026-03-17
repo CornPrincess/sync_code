@@ -5,10 +5,12 @@
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import { configStore } from './lib/stores/config.svelte.js';
   import FileTree from './lib/components/FileTree.svelte';
+  import DiffViewer from './lib/components/DiffViewer.svelte';
   import {
     startSync,
     commitAndPush,
     discardSync,
+    getFileDiff,
     type AppConfig,
     type SyncEvent,
     type FileChange,
@@ -30,6 +32,56 @@
   let pendingFiles = $state<FileChange[]>([]);
   let selectedPaths = $state(new Set<string>());
   let commitMessage = $state('');
+
+  // Diff viewer state
+  let activeFile = $state<FileChange | null>(null);
+  let activeDiff = $state('');
+  let diffLoading = $state(false);
+
+  // Panel widths (px) — driven by the drag splitters
+  let treeWidth   = $state(220);
+  let commitWidth = $state(260);
+
+  function startPanelDrag(which: 'tree' | 'commit', event: PointerEvent) {
+    event.preventDefault();
+    const startX    = event.clientX;
+    const startW    = which === 'tree' ? treeWidth : commitWidth;
+
+    function onMove(e: PointerEvent) {
+      const delta = e.clientX - startX;
+      if (which === 'tree') {
+        treeWidth = Math.max(120, Math.min(480, startW + delta));
+      } else {
+        commitWidth = Math.max(200, Math.min(420, startW - delta));
+      }
+    }
+
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.cursor      = '';
+      document.body.style.userSelect  = '';
+    }
+
+    document.body.style.cursor     = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup',   onUp);
+  }
+
+  async function handleFileClick(file: FileChange) {
+    if (activeFile?.path === file.path) return;
+    activeFile = file;
+    activeDiff = '';
+    diffLoading = true;
+    try {
+      activeDiff = await getFileDiff(syncedConfig?.repo_a.local_path ?? configStore.value.repo_a.local_path, file.path);
+    } catch {
+      activeDiff = '';
+    } finally {
+      diffLoading = false;
+    }
+  }
 
   onMount(() => {
     configStore.load();
@@ -102,6 +154,8 @@
       pendingFiles = [];
       selectedPaths = new Set();
       syncedConfig = null;
+      activeFile = null;
+      activeDiff = '';
     } catch (e: unknown) {
       status = 'error';
       errorMessage = e instanceof Error ? e.message : typeof e === 'string' ? e : 'Push failed.';
@@ -114,6 +168,8 @@
     pendingFiles = [];
     selectedPaths = new Set();
     syncedConfig = null;
+    activeFile = null;
+    activeDiff = '';
     status = 'idle';
   }
 
@@ -223,12 +279,50 @@
       {#if pendingFiles.length > 0}
         <div class="review-body">
           <!-- Left: hierarchical file tree with checkboxes -->
-          <div class="file-tree-wrap">
-            <FileTree files={pendingFiles} bind:selected={selectedPaths} />
+          <div class="file-tree-wrap" style:width="{treeWidth}px">
+            <FileTree
+              files={pendingFiles}
+              bind:selected={selectedPaths}
+              activeFile={activeFile?.path ?? null}
+              onfileclick={handleFileClick}
+            />
           </div>
 
+          <!-- Splitter: tree ↔ diff -->
+          <div
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize file tree"
+            onpointerdown={(e) => startPanelDrag('tree', e)}
+          ></div>
+
+          <!-- Middle: diff viewer -->
+          <div class="diff-pane">
+            {#if activeFile}
+              <div class="diff-pane-header">
+                <span class="diff-file-status diff-file-status-{activeFile.status}">
+                  {activeFile.status}
+                </span>
+                <span class="diff-file-path">{activeFile.path}</span>
+              </div>
+            {/if}
+            <div class="diff-pane-body">
+              <DiffViewer file={activeFile} diff={activeDiff} loading={diffLoading} />
+            </div>
+          </div>
+
+          <!-- Splitter: diff ↔ commit -->
+          <div
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize diff pane"
+            onpointerdown={(e) => startPanelDrag('commit', e)}
+          ></div>
+
           <!-- Right: commit message + buttons -->
-          <div class="commit-pane">
+          <div class="commit-pane" style:width="{commitWidth}px">
             <label class="field">
               <span class="field-label">Commit Message</span>
               <textarea
@@ -482,22 +576,98 @@
   .review-body {
     display: flex;
     gap: 0;
-    min-height: 220px;
-    max-height: 340px;
+    min-height: 340px;
+    max-height: 500px;
   }
 
-  /* File tree — left column */
+  /* File tree — left column (width set by drag state) */
   .file-tree-wrap {
-    flex: 1 1 0;
+    flex: 0 0 auto;
+    min-width: 120px;
+    max-width: 480px;
     overflow: hidden;
-    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
   }
 
-  /* Commit pane — right column */
+  /* Drag splitter */
+  .resizer {
+    flex: 0 0 4px;
+    width: 4px;
+    background: var(--border);
+    cursor: col-resize;
+    position: relative;
+    transition: background 0.15s;
+    z-index: 1;
+  }
+
+  /* Widen the hit-target without affecting layout */
+  .resizer::after {
+    content: '';
+    position: absolute;
+    inset: 0 -3px;
+  }
+
+  .resizer:hover,
+  .resizer:active {
+    background: var(--accent);
+  }
+
+  /* Diff pane — middle column */
+  .diff-pane {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .diff-pane-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: #161b22;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    min-height: 26px;
+  }
+
+  .diff-file-path {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diff-file-status {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    text-transform: capitalize;
+  }
+
+  .diff-file-status-added    { background: rgba(63,185,80,0.15);  color: var(--color-success); }
+  .diff-file-status-modified { background: rgba(121,192,255,0.15);color: #79c0ff; }
+  .diff-file-status-deleted  { background: rgba(248,81,73,0.15);  color: var(--color-error); }
+  .diff-file-status-renamed  { background: rgba(227,179,65,0.15); color: var(--color-warn); }
+  .diff-file-status-copied   { background: rgba(163,113,247,0.15);color: #a371f7; }
+  .diff-file-status-unknown  { background: rgba(139,148,158,0.15);color: var(--text-muted); }
+
+  .diff-pane-body {
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Commit pane — right column (width set by drag state) */
   .commit-pane {
-    flex: 0 0 300px;
+    flex: 0 0 auto;
+    min-width: 200px;
+    max-width: 420px;
     display: flex;
     flex-direction: column;
     gap: 10px;

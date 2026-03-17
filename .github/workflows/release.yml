@@ -70,8 +70,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name || inputs.tag }}
-          releaseName: 'sync_code ${{ github.ref_name || inputs.tag }}'
+          # inputs.tag is only set for workflow_dispatch; github.ref_name is the tag for push events.
+          # NOTE: do NOT write `github.ref_name || inputs.tag` — ref_name is never empty
+          # (it's the branch name for dispatches), so inputs.tag would never be used.
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: 'sync_code ${{ inputs.tag || github.ref_name }}'
+          # Use the project-local @tauri-apps/cli v2 so the action never falls back to a
+          # cached Tauri v1 CLI, which silently fails to parse tauri.conf.json v2 schema.
+          tauriScript: npm run tauri
           releaseBody: |
             ## 下载说明
 
@@ -93,7 +99,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name || inputs.tag }}"
+          $version = "${{ inputs.tag || github.ref_name }}"
           $exe = "src-tauri/target/release/sync-code.exe"
           $zipName = "sync-code_${version}_windows_portable.zip"
           Compress-Archive -Path $exe -DestinationPath $zipName
@@ -105,5 +111,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: ${{ env.PORTABLE_ZIP }}

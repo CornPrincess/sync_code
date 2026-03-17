@@ -87,7 +87,7 @@ export function defaultAppConfig(): AppConfig {
 
 /** Returns true when running inside a Tauri desktop window. */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && !!(window as Record<string, unknown>).__TAURI_INTERNALS__;
+  return typeof window !== 'undefined' && !!(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,4 +289,12 @@ export async function checkoutAndPull(
     proxy,
     platform,
   });
+}
+
+/** Fetch the staged diff for a single file. Returns unified-diff text. */
+export async function getFileDiff(localPath: string, filePath: string): Promise<string> {
+  if (isTauri()) return invoke<string>('get_file_diff', { localPath, filePath });
+  const res = await fetch(`/api/git/diff?local_path=${encodeURIComponent(localPath)}&file_path=${encodeURIComponent(filePath)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.text();
 }
