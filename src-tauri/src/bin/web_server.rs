@@ -378,7 +378,7 @@ async fn main() {
     println!("Serving frontend from: {}", std::fs::canonicalize(&dist).unwrap_or(dist).display());
     println!("Press Ctrl+C to stop.\n");
 
-    let _ = open_browser("http://localhost:8080");
+    open_browser("http://localhost:8080");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await.unwrap();
     axum::serve(listener, app).await.unwrap();
