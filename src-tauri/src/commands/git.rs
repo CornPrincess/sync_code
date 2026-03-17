@@ -170,10 +170,47 @@ pub async fn validate_repo(log: &LogFn, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Return commits on the current HEAD that are not yet pushed to `origin/<branch>`.
+/// Returns an empty Vec when the remote ref doesn't exist or git fails.
+async fn get_unpushed_commits(path: &Path, branch: &str) -> Vec<String> {
+    let range = format!("origin/{branch}..HEAD");
+    let Ok(out) = Command::new("git")
+        .args(["log", &range, "--oneline"])
+        .current_dir(path)
+        .output()
+        .await
+    else {
+        return vec![];
+    };
+    if !out.status.success() {
+        return vec![];
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
 /// Fetch + hard-reset to `origin/<branch>`.
 pub async fn git_pull(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) -> Result<()> {
     let path = Path::new(&repo.local_path);
     let branch = &repo.branch;
+
+    // Warn about local commits that will be overwritten by reset --hard.
+    let unpushed = get_unpushed_commits(path, branch).await;
+    if !unpushed.is_empty() {
+        emit_log(
+            log,
+            SyncEvent::warn(format!(
+                "⚠ Branch '{branch}' has {} unpushed commit(s) — these will be overwritten by reset --hard:",
+                unpushed.len()
+            )),
+        );
+        for commit in &unpushed {
+            emit_log(log, SyncEvent::warn(format!("    {commit}")));
+        }
+    }
 
     emit_log(
         log,
