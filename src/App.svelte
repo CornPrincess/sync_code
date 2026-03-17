@@ -38,6 +38,37 @@
   let activeDiff = $state('');
   let diffLoading = $state(false);
 
+  // Panel widths (px) — driven by the drag splitters
+  let treeWidth   = $state(220);
+  let commitWidth = $state(260);
+
+  function startPanelDrag(which: 'tree' | 'commit', event: PointerEvent) {
+    event.preventDefault();
+    const startX    = event.clientX;
+    const startW    = which === 'tree' ? treeWidth : commitWidth;
+
+    function onMove(e: PointerEvent) {
+      const delta = e.clientX - startX;
+      if (which === 'tree') {
+        treeWidth = Math.max(120, Math.min(480, startW + delta));
+      } else {
+        commitWidth = Math.max(200, Math.min(420, startW - delta));
+      }
+    }
+
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.cursor      = '';
+      document.body.style.userSelect  = '';
+    }
+
+    document.body.style.cursor     = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup',   onUp);
+  }
+
   async function handleFileClick(file: FileChange) {
     if (activeFile?.path === file.path) return;
     activeFile = file;
@@ -248,7 +279,7 @@
       {#if pendingFiles.length > 0}
         <div class="review-body">
           <!-- Left: hierarchical file tree with checkboxes -->
-          <div class="file-tree-wrap">
+          <div class="file-tree-wrap" style:width="{treeWidth}px">
             <FileTree
               files={pendingFiles}
               bind:selected={selectedPaths}
@@ -256,6 +287,15 @@
               onfileclick={handleFileClick}
             />
           </div>
+
+          <!-- Splitter: tree ↔ diff -->
+          <div
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize file tree"
+            onpointerdown={(e) => startPanelDrag('tree', e)}
+          ></div>
 
           <!-- Middle: diff viewer -->
           <div class="diff-pane">
@@ -272,8 +312,17 @@
             </div>
           </div>
 
+          <!-- Splitter: diff ↔ commit -->
+          <div
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize diff pane"
+            onpointerdown={(e) => startPanelDrag('commit', e)}
+          ></div>
+
           <!-- Right: commit message + buttons -->
-          <div class="commit-pane">
+          <div class="commit-pane" style:width="{commitWidth}px">
             <label class="field">
               <span class="field-label">Commit Message</span>
               <textarea
@@ -531,21 +580,43 @@
     max-height: 500px;
   }
 
-  /* File tree — left column */
+  /* File tree — left column (width set by drag state) */
   .file-tree-wrap {
-    flex: 0 0 220px;
-    min-width: 160px;
+    flex: 0 0 auto;
+    min-width: 120px;
+    max-width: 480px;
     overflow: hidden;
-    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
+  }
+
+  /* Drag splitter */
+  .resizer {
+    flex: 0 0 4px;
+    width: 4px;
+    background: var(--border);
+    cursor: col-resize;
+    position: relative;
+    transition: background 0.15s;
+    z-index: 1;
+  }
+
+  /* Widen the hit-target without affecting layout */
+  .resizer::after {
+    content: '';
+    position: absolute;
+    inset: 0 -3px;
+  }
+
+  .resizer:hover,
+  .resizer:active {
+    background: var(--accent);
   }
 
   /* Diff pane — middle column */
   .diff-pane {
     flex: 1 1 0;
     min-width: 0;
-    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -592,9 +663,11 @@
     overflow: hidden;
   }
 
-  /* Commit pane — right column */
+  /* Commit pane — right column (width set by drag state) */
   .commit-pane {
-    flex: 0 0 260px;
+    flex: 0 0 auto;
+    min-width: 200px;
+    max-width: 420px;
     display: flex;
     flex-direction: column;
     gap: 10px;
