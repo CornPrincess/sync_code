@@ -20,12 +20,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            args: '--target universal-apple-darwin'
+          # macOS universal binary (arm64 + x86_64 merged via lipo).
+          # macos-latest is arm64; cross-compiling x86_64 from arm64 works fine with Rust.
+          - os: macos-latest
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+            # --target universal-apple-darwin: Tauri-specific flag to build both arches and lipo-merge.
+            # -- --features web: cargo must compile web-server bin too; Tauri bundler
+            #    scans ALL [[bin]] entries in Cargo.toml and fails if any binary is missing.
+            args: '--target universal-apple-darwin -- --features web'
+
           - os: ubuntu-22.04
-            args: ''
+            rust-targets: ''
+            # -- --features web: same reason — web-server must be compiled so the
+            #    deb bundler can copy it; without this flag it is skipped by cargo and
+            #    the bundle step aborts with "web_server does not exist".
+            args: '-- --features web'
+
           - os: windows-latest
-            args: ''
+            rust-targets: ''
+            # Same fix as Linux — WiX (light.exe) fails when web_server.exe is absent.
+            args: '-- --features web'
 
     runs-on: ${{ matrix.os }}
 
@@ -43,15 +57,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Setup Rust (macOS universal)
-        if: matrix.os == 'macos-13'
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Setup Rust (other platforms)
-        if: matrix.os != 'macos-13'
-        uses: dtolnay/rust-toolchain@stable
+          # Empty string is fine for Linux/Windows; macOS passes both arches.
+          targets: ${{ matrix.rust-targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
