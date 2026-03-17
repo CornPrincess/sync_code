@@ -7,8 +7,8 @@ use tauri::ipc::Channel;
 use walkdir::WalkDir;
 
 use crate::commands::git::{
-    discard_changes, emit_log, get_staged_files, git_add_all, git_commit, git_pull,
-    git_push_only, is_dirty, revert_remaining, stage_selected, validate_repo, LogFn,
+    discard_changes, emit_log, get_staged_files, get_unpushed_commits, git_add_all, git_commit,
+    git_pull, git_push_only, is_dirty, revert_remaining, stage_selected, validate_repo, LogFn,
 };
 use crate::error::{AppError, Result};
 use crate::models::{AppConfig, FileChange, SyncEvent};
@@ -152,6 +152,25 @@ pub async fn do_sync(log: &LogFn, config: &AppConfig) -> Result<Vec<FileChange>>
             "Repo A has uncommitted changes. Please commit or discard them before syncing."
                 .into(),
         ));
+    }
+    let unpushed = get_unpushed_commits(&path_a, &config.repo_a.branch).await;
+    if !unpushed.is_empty() {
+        emit_log(
+            log,
+            SyncEvent::error(format!(
+                "✗ Repo A branch '{}' has {} unpushed commit(s) that would be overwritten by reset --hard:",
+                config.repo_a.branch,
+                unpushed.len()
+            )),
+        );
+        for commit in &unpushed {
+            emit_log(log, SyncEvent::error(format!("    {commit}")));
+        }
+        return Err(AppError::Validation(format!(
+            "Repo A branch '{}' has {} unpushed commit(s). Please push or discard them before syncing.",
+            config.repo_a.branch,
+            unpushed.len()
+        )));
     }
     emit_log(log, SyncEvent::info("  Repo A working tree is clean."));
 
