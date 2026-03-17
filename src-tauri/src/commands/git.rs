@@ -197,19 +197,23 @@ pub async fn git_pull(log: &LogFn, repo: &RepoConfig, proxy: &ProxyConfig) -> Re
     let path = Path::new(&repo.local_path);
     let branch = &repo.branch;
 
-    // Warn about local commits that will be overwritten by reset --hard.
+    // Block if local branch has commits not yet pushed — reset --hard would discard them.
     let unpushed = get_unpushed_commits(path, branch).await;
     if !unpushed.is_empty() {
         emit_log(
             log,
-            SyncEvent::warn(format!(
-                "⚠ Branch '{branch}' has {} unpushed commit(s) — these will be overwritten by reset --hard:",
+            SyncEvent::error(format!(
+                "✗ Branch '{branch}' has {} unpushed commit(s) that would be overwritten by reset --hard:",
                 unpushed.len()
             )),
         );
         for commit in &unpushed {
-            emit_log(log, SyncEvent::warn(format!("    {commit}")));
+            emit_log(log, SyncEvent::error(format!("    {commit}")));
         }
+        return Err(AppError::Validation(format!(
+            "Branch '{branch}' has {} unpushed commit(s). Please push or discard them before syncing.",
+            unpushed.len()
+        )));
     }
 
     emit_log(
