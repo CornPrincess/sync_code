@@ -166,7 +166,7 @@
   }
 
   async function browseZipFile() {
-    const selected = await open({ directory: false, multiple: false, filters: [{ name: 'Archive', extensions: ['zip', 'gz'] }] });
+    const selected = await open({ directory: false, multiple: false, filters: [{ name: 'Archive (zip / tar.gz)', extensions: ['zip', 'gz', 'tgz', 'tar'] }, { name: 'All Files', extensions: ['*'] }] });
     if (typeof selected === 'string') { config.zip_path = selected; onchange?.(); }
   }
 

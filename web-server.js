@@ -802,13 +802,15 @@ function buildArchiveApiUrl(remoteUrl, branch, platform, format = 'zip') {
       isGitHub: true,
     };
   } else if (platform === 'codeup') {
-    // Codeup (Yunxiao/阿里云): GitLab-compatible archive endpoint, auth via x-yunxiao-token
+    // Codeup (Yunxiao/阿里云): send both PRIVATE-TOKEN (GitLab-compatible PAT) and
+    // x-yunxiao-token (OAPI PAT) — server honours whichever token type the user has.
     const encodedPath = encodeURIComponent(projectPath);
     return {
       url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
-      headerName: 'x-yunxiao-token',
-      headerValue: '',  // filled in by caller
+      headerName: null,       // handled via extraHeaders
+      extraHeaders: { 'PRIVATE-TOKEN': '', 'x-yunxiao-token': '' },  // values filled by caller
       isGitHub: false,
+      isCodeup: true,
     };
   } else {
     // GitLab: use format query parameter
@@ -930,6 +932,10 @@ async function handleApiRoute(req, res, parsedUrl) {
       reqHeaders['Accept'] = 'application/vnd.github+json';
       reqHeaders['X-GitHub-Api-Version'] = '2022-11-28';
       reqHeaders['User-Agent'] = 'sync-code/1.0';
+    } else if (apiInfo.isCodeup) {
+      // Codeup: send both auth header variants — server accepts whichever token type
+      reqHeaders['PRIVATE-TOKEN'] = token;
+      reqHeaders['x-yunxiao-token'] = token;
     } else {
       reqHeaders[apiInfo.headerName] = token;
     }

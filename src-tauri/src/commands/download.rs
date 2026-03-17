@@ -25,15 +25,15 @@ fn split_url(url: &str) -> Option<(&str, &str, &str)> {
     Some((scheme, &after[..slash], &after[slash + 1..]))
 }
 
-/// Build the archive download URL and the auth header (name, value).
-/// `format` is "zip" or "tar.gz".
+/// Build the archive download URL and auth headers as (name, value) pairs.
+/// Returns `(url, headers)`.  `format` is "zip" or "tar.gz".
 fn build_archive_url(
     remote_url: &str,
     branch: &str,
     platform: &str,
     token: &str,
     format: &str,
-) -> Result<(String, String, String)> {
+) -> Result<(String, Vec<(String, String)>)> {
     let (scheme, host, path_raw) =
         split_url(remote_url.trim()).ok_or_else(|| {
             AppError::Validation(format!("Invalid remote URL: {remote_url}"))
@@ -54,9 +54,10 @@ fn build_archive_url(
             archive_type,
             percent_encode(branch),
         );
-        Ok((url, "Authorization".into(), format!("Bearer {token}")))
+        Ok((url, vec![("Authorization".into(), format!("Bearer {token}"))]))
     } else if platform == "codeup" {
-        // Codeup (Yunxiao/阿里云): GitLab-compatible archive endpoint, auth via x-yunxiao-token
+        // Codeup (Yunxiao/阿里云): send both PRIVATE-TOKEN (GitLab-compatible PAT)
+        // and x-yunxiao-token (OAPI PAT) — server honours whichever token type the user has.
         let encoded_path = percent_encode(project_path);
         let url = format!(
             "{scheme}://{host}/api/v4/projects/{encoded_path}/repository/archive\
@@ -64,7 +65,10 @@ fn build_archive_url(
             percent_encode(branch),
             percent_encode(format),
         );
-        Ok((url, "x-yunxiao-token".into(), token.to_string()))
+        Ok((url, vec![
+            ("PRIVATE-TOKEN".into(), token.to_string()),
+            ("x-yunxiao-token".into(), token.to_string()),
+        ]))
     } else {
         // GitLab: format parameter selects zip or tar.gz
         let encoded_path = percent_encode(project_path);
@@ -74,7 +78,7 @@ fn build_archive_url(
             percent_encode(branch),
             percent_encode(format),
         );
-        Ok((url, "PRIVATE-TOKEN".into(), token.to_string()))
+        Ok((url, vec![("PRIVATE-TOKEN".into(), token.to_string())]))
     }
 }
 
@@ -101,7 +105,7 @@ pub async fn download_repo_zip(
     }
 
     let fmt = format.as_deref().unwrap_or("zip");
-    let (url, header_name, header_value) =
+    let (url, auth_headers) =
         build_archive_url(&remote_url, &branch, &platform, &token, fmt)?;
 
     let ts = std::time::SystemTime::now()
@@ -119,9 +123,12 @@ pub async fn download_repo_zip(
         "--fail-with-body".into(),
         "-o".into(),
         out_path.to_string_lossy().into_owned(),
-        "-H".into(),
-        format!("{header_name}: {header_value}"),
     ];
+
+    for (name, value) in &auth_headers {
+        args.push("-H".into());
+        args.push(format!("{name}: {value}"));
+    }
 
     // GitHub requires Accept and User-Agent headers
     if platform == "github" {
