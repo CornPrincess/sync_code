@@ -75,6 +75,30 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Tauri v2 bundles ALL [[bin]] entries from Cargo.toml automatically.
+      # The web-server binary requires --features web and is never compiled by
+      # Tauri's own cargo invocation (which only builds the main sync-code bin).
+      # We must pre-build it here so the bundler can find it.
+
+      - name: Pre-build web_server binary (Linux / Windows)
+        if: matrix.os != 'macos-13'
+        run: cargo build --release --features web --bin web_server
+        working-directory: src-tauri
+
+      # macOS universal binary: compile for both arches then lipo-merge so the
+      # bundler finds web_server under target/universal-apple-darwin/release/.
+      - name: Pre-build web_server universal binary (macOS)
+        if: matrix.os == 'macos-13'
+        run: |
+          cargo build --release --features web --bin web_server --target aarch64-apple-darwin
+          cargo build --release --features web --bin web_server --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/web_server \
+            target/x86_64-apple-darwin/release/web_server \
+            -output target/universal-apple-darwin/release/web_server
+        working-directory: src-tauri
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

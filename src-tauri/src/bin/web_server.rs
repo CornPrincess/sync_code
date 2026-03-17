@@ -3,7 +3,7 @@
 //! Exposes the same Rust commands as the Tauri app via HTTP + SSE streaming,
 //! so Windows users who cannot install or run the desktop app can run:
 //!
-//!   cargo run --manifest-path src-tauri/Cargo.toml --bin web-server --features web
+//!   cargo run --manifest-path src-tauri/Cargo.toml --bin web_server --features web
 //!
 //! and then open http://localhost:8080 in any browser.
 
