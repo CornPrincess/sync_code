@@ -801,8 +801,17 @@ function buildArchiveApiUrl(remoteUrl, branch, platform, format = 'zip') {
       headerValue: '',  // filled in by caller
       isGitHub: true,
     };
+  } else if (platform === 'codeup') {
+    // Codeup (Yunxiao/阿里云): GitLab-compatible archive endpoint, auth via x-yunxiao-token
+    const encodedPath = encodeURIComponent(projectPath);
+    return {
+      url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
+      headerName: 'x-yunxiao-token',
+      headerValue: '',  // filled in by caller
+      isGitHub: false,
+    };
   } else {
-    // Codeup / GitLab: use format query parameter
+    // GitLab: use format query parameter
     const encodedPath = encodeURIComponent(projectPath);
     return {
       url: `${u.protocol}//${u.host}/api/v4/projects/${encodedPath}/repository/archive?sha=${encodeURIComponent(branch)}&format=${encodeURIComponent(format)}`,
@@ -922,7 +931,7 @@ async function handleApiRoute(req, res, parsedUrl) {
       reqHeaders['X-GitHub-Api-Version'] = '2022-11-28';
       reqHeaders['User-Agent'] = 'sync-code/1.0';
     } else {
-      reqHeaders['PRIVATE-TOKEN'] = token;
+      reqHeaders[apiInfo.headerName] = token;
     }
     try {
       const buf = await downloadBuffer(apiInfo.url, reqHeaders);

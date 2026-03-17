@@ -55,8 +55,18 @@ fn build_archive_url(
             percent_encode(branch),
         );
         Ok((url, "Authorization".into(), format!("Bearer {token}")))
+    } else if platform == "codeup" {
+        // Codeup (Yunxiao/阿里云): GitLab-compatible archive endpoint, auth via x-yunxiao-token
+        let encoded_path = percent_encode(project_path);
+        let url = format!(
+            "{scheme}://{host}/api/v4/projects/{encoded_path}/repository/archive\
+             ?sha={}&format={}",
+            percent_encode(branch),
+            percent_encode(format),
+        );
+        Ok((url, "x-yunxiao-token".into(), token.to_string()))
     } else {
-        // Codeup / GitLab: format parameter selects zip or tar.gz
+        // GitLab: format parameter selects zip or tar.gz
         let encoded_path = percent_encode(project_path);
         let url = format!(
             "{scheme}://{host}/api/v4/projects/{encoded_path}/repository/archive\
