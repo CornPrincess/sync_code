@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 8080;
+const PORT = 9090;
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
 
@@ -332,6 +332,22 @@ async function gitPushOnly(repo, proxy, logFn) {
 async function isDirty(localPath) {
   const out = await runGit(localPath, ['status', '--porcelain']);
   return out.trim().length > 0;
+}
+
+/**
+ * Get list of unpushed commits on the current branch.
+ * Returns an array of commit strings (format: "hash subject").
+ * Returns empty array if remote ref doesn't exist or git fails.
+ */
+async function getUnpushedCommits(localPath, branch) {
+  try {
+    const range = `origin/${branch}..HEAD`;
+    const out = await runGit(localPath, ['log', range, '--oneline']);
+    return out.split('\n').filter(l => l.trim().length > 0);
+  } catch (e) {
+    // Remote ref might not exist yet, or git command failed
+    return [];
+  }
 }
 
 async function discardChanges(localPath) {
@@ -664,6 +680,17 @@ async function doSync(config, logFn) {
   if (await isDirty(repo_a.local_path)) {
     throw new Error('Repo A has uncommitted changes. Please commit or discard them before syncing.');
   }
+  
+  // Check for unpushed commits in Repo A
+  const unpushed = await getUnpushedCommits(repo_a.local_path, repo_a.branch);
+  if (unpushed.length > 0) {
+    logFn('error', `✗ Repo A branch '${repo_a.branch}' has ${unpushed.length} unpushed commit(s) that would be overwritten by reset --hard:`);
+    for (const commit of unpushed) {
+      logFn('error', `    ${commit}`);
+    }
+    throw new Error(`Repo A branch '${repo_a.branch}' has ${unpushed.length} unpushed commit(s). Please push or discard them before syncing.`);
+  }
+  
   logFn('info', '  Repo A working tree is clean.');
 
   // ── Step 3: Pull Repo A ───────────────────────────────────────────────────
