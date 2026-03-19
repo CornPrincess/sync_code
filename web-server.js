@@ -484,62 +484,26 @@ function extractTarGz(archivePath, logFn) {
     logFn('info', `Temp dir: ${tmpDir}`);
   }
 
-  // Python one-liner: open the archive and extract to tmpDir.
-  // Uses tarfile which decodes header bytes as UTF-8 by default.
-  const PYTHON_SCRIPT =
-    'import tarfile,sys; tarfile.open(sys.argv[1],"r:gz").extractall(sys.argv[2])';
-
   return new Promise((resolve, reject) => {
-    const cleanup = () => {
+    const proc = spawn('tar', ['-xzf', archivePath, '-C', tmpDir], { stdio: 'pipe', shell: false });
+
+    let errOut = '';
+    proc.stderr?.on('data', chunk => { errOut += chunk.toString(); });
+
+    proc.on('error', err => {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
-    };
+      reject(new Error(`tar not found: ${err.message}. Please install tar (available on Linux/macOS; Windows 10+ includes it).`));
+    });
 
-    function runProc(cmd, args) {
-      const proc = spawn(cmd, args, { stdio: 'pipe', shell: false });
-      let errOut = '';
-      proc.stderr?.on('data', chunk => { errOut += chunk.toString('utf8'); });
-      proc.stdout?.on('data', chunk => { errOut += chunk.toString('utf8'); });
-      return { proc, getErr: () => errOut };
-    }
-
-    if (process.platform === 'win32') {
-      // ── Attempt 1: Python 3 ──────────────────────────────────────────────
-      const { proc: pyProc, getErr: getPyErr } = runProc('python', [
-        '-c', PYTHON_SCRIPT, archivePath, tmpDir,
-      ]);
-
-      pyProc.on('error', () => {
-        // Python not found — fall back to system tar with explicit charset.
-        if (logFn) logFn('info', 'Python not found, falling back to tar --hdrcharset=UTF-8');
-        const { proc: tarProc, getErr: getTarErr } = runProc('tar', [
-          '--hdrcharset=UTF-8', '-xzf', archivePath, '-C', tmpDir,
-        ]);
-        tarProc.on('error', err => {
-          cleanup();
-          reject(new Error(`tar not found: ${err.message}. Install tar (Windows 10+ includes it) or Python 3.`));
-        });
-        tarProc.on('close', code => {
-          if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
-          else { cleanup(); reject(new Error(`tar extraction failed (exit ${code}): ${getTarErr().trim()}`)); }
-        });
-      });
-
-      pyProc.on('close', code => {
-        if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
-        else { cleanup(); reject(new Error(`tar.gz extraction failed (exit ${code}): ${getPyErr().trim()}`)); }
-      });
-    } else {
-      // ── Linux / macOS: system tar with UTF-8 locale ─────────────────────
-      const { proc, getErr } = runProc('tar', ['-xzf', archivePath, '-C', tmpDir]);
-      proc.on('error', err => {
-        cleanup();
-        reject(new Error(`tar not found: ${err.message}. Please install tar.`));
-      });
-      proc.on('close', code => {
-        if (code === 0) { if (logFn) logFn('info', 'tar.gz extracted successfully.'); resolve(tmpDir); }
-        else { cleanup(); reject(new Error(`tar extraction failed (exit ${code}): ${getErr().trim()}`)); }
-      });
-    }
+    proc.on('close', code => {
+      if (code === 0) {
+        if (logFn) logFn('info', 'tar.gz extracted successfully.');
+        resolve(tmpDir);
+      } else {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+        reject(new Error(`tar extraction failed (exit ${code}): ${errOut.trim()}`));
+      }
+    });
   });
 }
 
@@ -680,7 +644,7 @@ async function doSync(config, logFn) {
   if (await isDirty(repo_a.local_path)) {
     throw new Error('Repo A has uncommitted changes. Please commit or discard them before syncing.');
   }
-  
+
   // Check for unpushed commits in Repo A
   const unpushed = await getUnpushedCommits(repo_a.local_path, repo_a.branch);
   if (unpushed.length > 0) {
@@ -690,7 +654,7 @@ async function doSync(config, logFn) {
     }
     throw new Error(`Repo A branch '${repo_a.branch}' has ${unpushed.length} unpushed commit(s). Please push or discard them before syncing.`);
   }
-  
+
   logFn('info', '  Repo A working tree is clean.');
 
   // ── Step 3: Pull Repo A ───────────────────────────────────────────────────
