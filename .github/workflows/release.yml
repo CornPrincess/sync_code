@@ -81,14 +81,14 @@ jobs:
       # We must pre-build it here so the bundler can find it.
 
       - name: Pre-build web_server binary (Linux / Windows)
-        if: matrix.os != 'macos-13'
+        if: matrix.os != 'macos-latest'
         run: cargo build --release --features web --bin web_server
         working-directory: src-tauri
 
       # macOS universal binary: compile for both arches then lipo-merge so the
       # bundler finds web_server under target/universal-apple-darwin/release/.
       - name: Pre-build web_server universal binary (macOS)
-        if: matrix.os == 'macos-13'
+        if: matrix.os == 'macos-latest'
         run: |
           cargo build --release --features web --bin web_server --target aarch64-apple-darwin
           cargo build --release --features web --bin web_server --target x86_64-apple-darwin
